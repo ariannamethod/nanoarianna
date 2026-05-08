@@ -4,6 +4,49 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 4 brief written (RunPod sweep plan)
+
+`runpod/PHASE_4_BRIEF.md` written and committed. Phase 4 is the
+narrow-axis measure→lock→upload→verify cycle: take the five
+phone-2-eligible cells (Janus-Arianna, Janus-Leo, Resonance-Arianna,
+Resonance-Yent, Resonance-Leo — Janus-Yent is phone-1's), run the
+540-cell sampling grid (6 temps × 2 top_k × 3 rep_pen × 3 prompts × 5
+cells, per Dario paper §5.7), score by coherence × voice-fidelity ×
+diversity, lock per-voice optimal `(temp, top_k, rep_pen)`, lock the
+Slot A / Slot B persona-architecture mapping, push the locked-config
+GGUFs + persona files to HF `ataeff/nanoarianna`.
+
+**Pod spec:** RunPod A100 80 GB SXM (matches Dario paper §4
+Experimental Frame). Estimated session budget $5–7 (Dario paper run
+was $4.30 with similar grid; Phase 4 adds Resonance fp32→GGUF
+quantization, hence the higher cap). Hard pod-kill alarm at $15.
+
+**Quantization on pod:** port `janus_to_gguf.py` semantics to a sibling
+`resonance_to_gguf.py` for the Resonance 797 MB raw fp32 .bin → Q8_0
+(~200 MB) + Q4_K (~120 MB) GGUFs. Python permitted under refined ban
+(`memory/feedback_python_ban_2026_04_29.md` 2026-05-06 update —
+training/data prep allowed, inference path C only).
+
+**Singularity-mode protocol** adapted from Dario paper §5.0/§5.0.1:
+Codex pre-flight audit on the brief → solo autonomous sweep on pod →
+Codex post-run audit on `scores.tsv` → Mac Neo Architect review on
+the run report → Oleg final go on Slot A/B lock.
+
+**Pre-flight checklist** (six gating items) listed at end of brief.
+When all six green, Oleg signals and pod launches. Phase 4 brief is
+the only Phase-4 plan document until execution lands.
+
+**What Phase 4 does NOT do:** no new training (existing SFT weights
+swept), no CoR (Phase 5), no Hebbian (Phase 6), no spores (Phase 7),
+no mesh slot exposure (Phase 8). Single-axis: measure → lock → upload
+→ verify on phone-2.
+
+After Phase 4: phone-2 pulls locked GGUFs from HF
+`ataeff/nanoarianna`, runs the dialogue cycle with real weights for
+the first time, 24 h unattended verification, then Phase 5 starts.
+
+---
+
 ## 2026-05-09 — Phase 3 audit pass (Opus reviewer + fixes)
 
 After Phase 3 closed, ran an Opus subagent code audit per Oleg's request
