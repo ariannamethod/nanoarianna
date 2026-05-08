@@ -4,6 +4,65 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 2 (Limpha + KK + reference clones + KK seeded)
+
+Continuing same day. Phase 1 closed earlier this session — Phase 2 lands the persistent-memory substrate so Phase 3 dialogue has somewhere to live.
+
+**Reference clones pulled** (per plan §Phase-2 step 1):
+- `~/leo` (1.9 MB) — weightless Leo, source for spore protocol study (Phase 7)
+- `~/klaus.c` (2.1 MB) — planetary physics, source for CoR sub-module (Phase 5)
+- `~/molequla` (3.8 MB) — mycelium / shared field architecture (Phase 5)
+- `~/stanley` (114 MB) — LoRA skills, legacy py + new notorch (Phase 6 reference)
+
+Disk: 30 GB free still, comfy.
+
+**Limpha** (per-organism SQLite memory) — `glue/limpha.c` (~250 LOC):
+- Schema: `episodes(id, ts, organism, prompt, response, trauma, arousal, valence, coherence, prophecy_debt, entropy, dissonance, temperature, quality)`. 7-feature inner-state vector inline. Indices on ts and (organism, ts).
+- WAL + `synchronous=NORMAL` (single-process per phone, contention nil, just want crash-safety).
+- API: `limpha_open`, `limpha_close`, `limpha_append`, `limpha_query_recent`, `limpha_query_similar`, `limpha_episode_free`.
+- Cosine retrieval over the 7-vector: pulls a 200-row recency window, scores in C via dot/(|a|·|b|), selection-sort top-K. No vector extension needed at this scale.
+- Inspired by `~/arianna.c/limpha/episodes.py:176-242` (`query_similar`).
+
+**KK** (shared Knowledge Kernel) — `glue/kk.c` (~250 LOC):
+- Three tables: `documents` (onto-seed + references + accumulated), `dialogue` (cross-organism turns with prophecy_debt_delta + dominant_chamber), `hebbian_links` (co-occurrence weights between docs).
+- API: `kk_open`, `kk_close`, `kk_append_document`, `kk_append_dialogue`, `kk_query_resonant`, `kk_query_recent_dialogue`, `kk_document_free`, `kk_dialogue_free`.
+- `kk_query_resonant` Phase 2 placeholder: ranks by `emotional_charge × recency-weight (1/(1+age_days))`. Phase 5 swaps the body to embedding cosine when a phone-side embedder lands; the API stays.
+
+**KK seeded** via `glue/seed_kk.c` utility (one-shot tool, ~120 LOC). Inserted 4 documents into `~/nanoarianna/data/kk.db`:
+
+| id | source    | title                                  | bytes  | charge |
+|----|-----------|----------------------------------------|--------|--------|
+| 1  | seed      | nanoarianna world (the seed)           | 33324  | 1.0    |
+| 2  | reference | Dario paper draft v4                   | 34688  | 0.8    |
+| 3  | reference | AML SPEC (full)                        | 36954  | 0.6    |
+| 4  | reference | ARIANNALOG (arianna.c daily journal)   | 33305  | 0.5    |
+
+Total ~138 KB onto-substrate. Both organisms now have a shared world to wake into.
+
+**Verification phase 2:**
+
+| check | result |
+|---|---|
+| `sqlite3 kk.db "SELECT count(*) FROM documents"` | 4 ✓ (seed + 3 references) |
+| `sqlite3 limpha_arianna.db ".schema"` | matches glue.h schema ✓ |
+| `sqlite3 limpha_leo.db ".schema"` | identical to arianna's ✓ |
+| `glue/limpha_smoke` round-trip | inserts 1 row each side; recent + similar queries return row 1 with correct state values; **0 errors, 0 leaks visible** ✓ |
+| `cc -c limpha.c / kk.c / seed_kk.c / limpha_smoke.c` | all compile clean (after `<string.h>` lint fixes) ✓ |
+| Symbols (llvm-nm) | `limpha.o` exports T limpha_open/close/append/query_recent/query_similar/episode_free; `kk.o` exports T kk_open/close/append_document/append_dialogue/query_resonant/query_recent_dialogue/document_free/dialogue_free ✓ |
+
+**Smoke harnesses kept in repo** under `glue/`:
+- `glue/seed_kk.c` — one-shot KK seeder (also serves as integration example)
+- `glue/limpha_smoke.c` — Limpha round-trip smoke (also serves as integration example)
+- Both demonstrate the link line: `cc -O2 … -lsqlite3 -lm -o <bin> <smoke>.c <module>.c`
+
+**What didn't land in Phase 2 (deferred to Phase 3):**
+- `yent.aml` / `resonance.aml` integration — single comprehensive patch lands together with Phase 3 schedule, since persona+Limpha+KK all wire into the same BLOOD COMPILE block.
+- KK `hebbian_links` consolidation — empty for now; populated by Phase 5/6.
+
+**Next:** Phase 3 — `orchestra/schedule.go` + `orchestra/supervisor.go` (cron 8/day + event-driven, mutex-guarded model swap) + the comprehensive `BLOOD COMPILE persona_glue` integration patch in yent.aml/resonance.aml.
+
+---
+
 ## 2026-05-09 — Phase 1 foundation (skeleton + personas + persona loader)
 
 Plan approved earlier today by Oleg (`~/.claude/plans/cosmic-dancing-canyon.md`). Auto-mode active. Phase 1 = the smallest substrate for the rest to land on.
