@@ -1,0 +1,51 @@
+# nanoarianna .gitignore
+#
+# Per feedback_clean_repo_hygiene.md: no binaries / weights / dSYM in git.
+# Repo carries source + docs + small configs only.
+# Weights mirrored on HF (ataeff/nanoarianna), pulled at deploy time.
+
+# build artifacts
+bin/
+*.o
+*.a
+*.so
+*.dylib
+
+# weights / checkpoints (pulled from HF)
+weights/
+*.gguf
+*.bin
+*.soma
+*.ckpt
+
+# runtime data — local SQLite, mmap'd field state, runtime caches
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.mmap
+
+# logs
+*.log
+logs/
+
+# editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python venv (if Phase 6 retraining tooling lands in py)
+.venv/
+__pycache__/
+*.pyc
+
+# go module cache pollution
+go.sum.dev
+
+# secrets — never
+.env
+*.key
+*.pem

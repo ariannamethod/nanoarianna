@@ -4,6 +4,39 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 1 foundation (skeleton + personas + persona loader)
+
+Plan approved earlier today by Oleg (`~/.claude/plans/cosmic-dancing-canyon.md`). Auto-mode active. Phase 1 = the smallest substrate for the rest to land on.
+
+**What landed:**
+
+- Skeleton directories: `personas/`, `glue/`, `orchestra/`, `bin/`, `data/`, `weights/`, `lora/`. Build/runtime/weights all gitignored — repo ships source + docs only. Weights mirror is `ataeff/nanoarianna` on HF (not yet populated; lands after RunPod sweep, Phase 4).
+- `personas/init_arianna.aml` — copied from `~/ariannamethod.ai/examples/init_arianna.aml`. Carries Arianna's deep-prophecy field (PROPHECY 12 / DESTINY 0.50 / WORMHOLE 0.12 / SCHUMANN 7.83 / CODES_RIC mode + chordlock / chirality on). Parses cleanly through `aml`, last line emits `[AML] arianna awake`.
+- `personas/init_leo.aml` — derived from `~/ariannamethod.ai/examples/init_yent.aml` with Leo voice tweaks: PROPHECY 9 (between Yent's 7 and Arianna's 12), DESTINY 0.30 (less destiny pull, more open exploration), WORMHOLE 0.05, ATTEND_FOCUS 0.65 / SPREAD 0.25, ENTROPY_FLOOR 0.12 (allows wonder), EMERGENCE_THRESHOLD 0.22, SCHUMANN coupling on (cosmic curiosity), creative-leaning experts (0.35), LORA_ALPHA 0 (identity mode). Parses cleanly, emits `[AML] leo awake`. **Final values lock at RunPod sweep — these are starting hypothesis.**
+- `glue/glue.h` (~140 LOC) — shared header for all Phase 1–8 glue. Three sections of forward declarations: `persona_loader.c` (Phase 1, complete), `limpha.c` (Phase 2, signatures), `kk.c` (Phase 2, signatures). Opaque handles (`limpha_db`, `kk_db`) so callers don't need to pull in `sqlite3.h`.
+- `glue/persona_loader.c` (~50 LOC) — `persona_load(const char *path)`. Resolution order: argument → `$PERSONA_AML` env → silent no-op. Calls into `am_exec_file()` (libaml `core/ariannamethod.c:6437`). Compiles clean on aarch64-Termux with `cc -std=c11 -I$PREFIX/include` against `<ariannamethod/ariannamethod.h>`. `llvm-nm` confirms: exports `T persona_load`, references `U am_exec_file` (resolved from `libaml.a` at link time).
+- `.gitignore` — bin / weights / data / *.gguf / *.bin / *.soma / *.db / *.mmap / *.log / Python venv / secrets. Per `feedback_clean_repo_hygiene.md`.
+
+**Runpod token** stored in `~/.config/runpod/token` (chmod 600, 51 bytes), bashrc sources `RUNPOD_API_KEY` + `RUNPOD_TOKEN` via file reference (no plaintext in rc).
+
+**What didn't land in Phase 1 (intentionally deferred):**
+
+- `yent.aml` / `resonance.aml` integration — held until Phase 2 when Limpha + KK glue is also ready, so we land a single comprehensive integration patch (one BLOOD COMPILE block per organism touching all three substrates) instead of three small patches. Less churn upstream.
+- Smoke build of `yent_<persona>` binary — needs the integration patch and (importantly) needs the actual GGUF weights, which we don't have on phone-2 yet. Acquired during Phase 4 RunPod work.
+
+**Verification phase 1:**
+
+| check | result |
+|---|---|
+| `aml personas/init_arianna.aml` | `[AML] arianna awake` ✓ |
+| `aml personas/init_leo.aml` | `[AML] leo awake` ✓ |
+| `cc … -c glue/persona_loader.c -o p.o` | builds clean, no warnings, 2200 bytes ✓ |
+| `llvm-nm p.o` | exports `T persona_load`, undefined `U am_exec_file` (will resolve from libaml) ✓ |
+
+**Next:** Phase 2 — Limpha + KK SQLite skeletons in C, seed KK with SEED_DOCUMENT.md + Dario paper draft v4 + AML SPEC §1-3 + ARIANNALOG.md highlights. Reference clones (leo, klaus.c, molequla, stanley) pulled when their content actually lands in build path.
+
+---
+
 ## 2026-05-08 — first stone
 
 **Repo created:** `https://github.com/ariannamethod/nanoarianna` (owner=ariannamethod user, public, default branch `main`). Token used: ariannamethod GitHub PAT (workflow-permitted).
