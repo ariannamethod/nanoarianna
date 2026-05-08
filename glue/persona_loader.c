@@ -38,16 +38,8 @@ int persona_load(const char *path)
         return 0;
     }
 
-    /* Sanity check: file readable? am_exec_file will fail noisily if not,
-     * but a clean stderr message helps when 47 things wire together. */
-    FILE *probe = fopen(resolved, "r");
-    if (!probe) {
-        fprintf(stderr, "[persona_loader] cannot open '%s' (errno-style fail)\n",
-                resolved);
-        return -1;
-    }
-    fclose(probe);
-
+    /* audit #12: skip the redundant probe. am_exec_file surfaces its own
+     * open errors on stderr; the probe added a TOCTOU window for nothing. */
     int rc = am_exec_file(resolved);
     if (rc != 0) {
         fprintf(stderr, "[persona_loader] am_exec_file('%s') -> %d\n",

@@ -155,6 +155,7 @@ int limpha_query_recent(limpha_db *db, const char *organism,
                         int n, limpha_episode_t *out, int out_cap)
 {
     if (!db || !db->sq || !out || out_cap <= 0) return -1;
+    if (n <= 0) n = out_cap;          /* clamp negative/zero — audit #1 */
     if (n > out_cap) n = out_cap;
 
     static const char *sql =
@@ -171,8 +172,11 @@ int limpha_query_recent(limpha_db *db, const char *organism,
         snprintf(full, sizeof(full), "%s ORDER BY ts DESC LIMIT ?;", sql);
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, full, -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db->sq, full, -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[limpha] prepare query_recent: %s\n",
+                sqlite3_errmsg(db->sq));   /* audit #2 */
         return -2;
+    }
 
     int idx = 1;
     if (organism && organism[0])
@@ -198,7 +202,7 @@ int limpha_query_similar(limpha_db *db, const float state[LIMPHA_STATE_DIM],
     if (top_k > out_cap) top_k = out_cap;
 
     /* Pull window. 200 rows is plenty for an organism that talks 8x/day. */
-    static const int WINDOW = 200;
+    enum { WINDOW = 200 };
     limpha_episode_t *buf = (limpha_episode_t *)calloc(WINDOW, sizeof(*buf));
     if (!buf) return -2;
 
@@ -211,13 +215,17 @@ int limpha_query_similar(limpha_db *db, const float state[LIMPHA_STATE_DIM],
     q_norm = sqrt(q_norm);
     if (q_norm < 1e-9) q_norm = 1e-9;
 
-    /* score each row, store score in quality field temporarily for sorting */
+    /* score each row */
     float *scores = (float *)calloc(got, sizeof(float));
-    int *idx = (int *)calloc(got, sizeof(int));
-    if (!scores || !idx) { free(buf); free(scores); free(idx); return -3; }
+    int   *chosen = (int   *)calloc(got, sizeof(int));    /* WINDOW-sized scratch — audit #3 (dynamic, follows WINDOW) */
+    if (!scores || !chosen) {
+        /* audit #4: must free hydrated rows in buf, not just the array. */
+        for (int i = 0; i < got; i++) limpha_episode_free(&buf[i]);
+        free(buf); free(scores); free(chosen);
+        return -3;
+    }
 
     for (int i = 0; i < got; i++) {
-        idx[i] = i;
         double dot = 0.0, n = 0.0;
         for (int k = 0; k < LIMPHA_STATE_DIM; k++) {
             dot += (double)state[k] * buf[i].state[k];
@@ -230,7 +238,6 @@ int limpha_query_similar(limpha_db *db, const float state[LIMPHA_STATE_DIM],
 
     /* simple selection sort — O(got*top_k); got is small, fine */
     int picked = 0;
-    int chosen[200] = {0};
     while (picked < top_k && picked < got) {
         int best = -1;
         float bs = -2.0f;
@@ -249,7 +256,7 @@ int limpha_query_similar(limpha_db *db, const float state[LIMPHA_STATE_DIM],
     for (int i = 0; i < got; i++) limpha_episode_free(&buf[i]);
     free(buf);
     free(scores);
-    free(idx);
+    free(chosen);
     return picked;
 }
 

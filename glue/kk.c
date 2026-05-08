@@ -94,8 +94,11 @@ int kk_append_document(kk_db *db, const char *source, const char *title,
         "VALUES (strftime('%s','now'), ?, ?, ?, ?, 0.0);";
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[kk] prepare append_document: %s\n",
+                sqlite3_errmsg(db->sq));      /* audit #8 */
         return -2;
+    }
 
     sqlite3_bind_text  (st, 1, source,                    -1, SQLITE_TRANSIENT);
     sqlite3_bind_text  (st, 2, title ? title : "",        -1, SQLITE_TRANSIENT);
@@ -119,8 +122,11 @@ int kk_append_dialogue(kk_db *db, const char *speaker, const char *listener,
         "VALUES (strftime('%s','now'), ?, ?, ?, ?, ?, ?);";
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[kk] prepare append_dialogue: %s\n",
+                sqlite3_errmsg(db->sq));      /* audit #8 */
         return -2;
+    }
 
     sqlite3_bind_text  (st, 1, speaker,                            -1, SQLITE_TRANSIENT);
     sqlite3_bind_text  (st, 2, listener,                           -1, SQLITE_TRANSIENT);

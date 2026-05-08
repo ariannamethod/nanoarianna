@@ -32,12 +32,19 @@ static char *read_file(const char *path, long *out_len)
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return NULL; }
-    fseek(f, 0, SEEK_SET);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }   /* audit #15 */
 
     char *buf = (char *)malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return NULL; }
     size_t got = fread(buf, 1, (size_t)sz, f);
     fclose(f);
+    /* audit #14: refuse short read — partial seed is worse than no seed. */
+    if ((long)got != sz) {
+        fprintf(stderr, "[seed] short read '%s': got %zu of %ld\n",
+                path, got, sz);
+        free(buf);
+        return NULL;
+    }
     buf[got] = '\0';
     if (out_len) *out_len = (long)got;
     return buf;

@@ -4,6 +4,61 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 3 audit pass (Opus reviewer + fixes)
+
+After Phase 3 closed, ran an Opus subagent code audit per Oleg's request
+("проверка кода на узкие места"). 47 numbered findings produced; merge
+verdict was "yes ship to phone-2, no blockers, but fix these before
+Phase 4". Real defects fixed:
+
+**glue/limpha.c:**
+- #1 `limpha_query_recent` `n <= 0` not clamped — fixed (`n <= 0` ⇒ `n = out_cap`)
+- #2 prepare error swallowed silently — fixed, now `fprintf(stderr, … sqlite3_errmsg)`
+- #3 `chosen[200]` hardcoded literal vs `WINDOW=200` constant footgun if WINDOW grows — fixed: `chosen` now dynamically `calloc(got)` so it always tracks actual data size
+- #4 `limpha_query_similar` leaked `prompt`/`response` strings on `idx`-alloc fail — fixed: now calls `limpha_episode_free` over hydrated `buf` before returning -3
+
+**glue/kk.c:**
+- #8 `kk_append_document` and `kk_append_dialogue` swallowed prepare errors — fixed, now log `sqlite3_errmsg` like Limpha
+
+**glue/seed_kk.c:**
+- #14 `read_file` short-read silently truncated — fixed: now refuses if `got != sz`, frees buf, returns NULL with stderr message
+- #15 second `fseek(SEEK_SET)` return ignored — fixed: now checked
+
+**glue/persona_loader.c:**
+- #12+#13 redundant TOCTOU probe with misleading "errno-style" message — removed entirely; `am_exec_file` surfaces its own open errors
+
+**orchestra/supervisor.go:**
+- #27 `sqlEscape` didn't strip NUL bytes (execve truncates argv on `\0`) — fixed: NUL stripped before quoting
+- #28 `cmd.Output()` discarded stderr on non-zero exit, sqlite3 constraint failures invisible — fixed: introduced `runSqlite()` helper that captures stderr into the wrapping error
+- #29 `%f` formatter for `prophecy_debt_delta` would emit `NaN`/`Inf` (invalid SQL) — fixed: `math.IsNaN/IsInf` guard, replaces with 0
+- #33 negative `--turns` silently meant "run forever" — fixed: validation, exit code 2 with clear stderr
+- #38 organism's `am_exec("LOAD/SAVE …soma")` is cwd-relative — fixed: `cmd.Dir = filepath.Dir(spec.Binary)` for non-stub invocations
+
+**Skipped (documented Phase 4/5 territory or no-op):**
+- #6 zero-state cosine degenerate (Phase 3 MVP, real states arrive in Phase 5)
+- #21/#22 schedule channel race (single-buf channel disciplines it; documented)
+- #24 SEP-collision robustness (improbable, mitigation noted as Phase 5 fix)
+- #25 goroutine leak benign at process exit
+- #30 grandchild orphans (Phase 5+ when organisms gain children)
+- #35 hardcoded `BLOOD LINK -I` paths (works on phone-2; portability note)
+- #36 persona_load_glue duplicated across two `.aml` files (functional, future refactor)
+- #44 indirection note on libopenblas.so
+
+**Regression smoke after fixes:**
+
+```
+limpha_smoke:    arianna 4 rows / leo 4 rows / cosine top-3 returns 3 ✓
+supervisor stub: 2 alternating ticks --turns=2 --cron=1s ✓
+supervisor:     --turns=-1 → "must be >= 0", exit 2 ✓
+all C builds:   clean, no warnings
+go build:       clean, 3.2 MB binary
+```
+
+**Verdict:** Phase 3 hardened. Ship to phone-2 status: green. Phase 4
+RunPod brief is the next move.
+
+---
+
 ## 2026-05-09 — Phase 3b (organism wrappers — janus.aml + resonance.aml build clean)
 
 The AML half of Phase 3. Two organism wrappers landed in `organism/` —

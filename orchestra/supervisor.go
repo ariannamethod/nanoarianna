@@ -23,6 +23,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,9 +142,20 @@ func HandleTick(ctx context.Context, cfg SupervisorConfig, specs map[string]Orga
 	defer cancel()
 	cmd := exec.CommandContext(cctx, spec.Binary, args...)
 	cmd.Env = env
+	// audit #38: organism's am_exec("LOAD/SAVE …soma") uses cwd-relative
+	// paths. Make cwd be the binary's directory so the .soma file lives
+	// next to the binary regardless of where supervisor was launched.
+	if spec.Binary != "echo" {
+		cmd.Dir = filepath.Dir(spec.Binary)
+	}
+	// audit #28: capture stderr too so sqlite3 / organism error messages
+	// surface in the wrapping error rather than vanishing on non-zero exit.
+	stderrBuf := &strings.Builder{}
+	cmd.Stderr = stderrBuf
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("supervisor: invoke %s: %w", spec.Binary, err)
+		return fmt.Errorf("supervisor: invoke %s: %w (stderr: %s)",
+			spec.Binary, err, abridge(stderrBuf.String(), 200))
 	}
 	response := strings.TrimSpace(string(out))
 
@@ -165,13 +177,17 @@ func HandleTick(ctx context.Context, cfg SupervisorConfig, specs map[string]Orga
 }
 
 func appendDialogue(kkPath, speaker, listener, prompt, response string, debtDelta float64, chamber string) error {
+	// audit #29: NaN/Inf in float literal is not valid SQL. Guard.
+	if math.IsNaN(debtDelta) || math.IsInf(debtDelta, 0) {
+		debtDelta = 0
+	}
 	q := fmt.Sprintf(
 		"INSERT INTO dialogue (ts, speaker, listener, prompt, response, prophecy_debt_delta, dominant_chamber) "+
 			"VALUES (strftime('%%s','now'), %s, %s, %s, %s, %f, %s);",
 		sqlEscape(speaker), sqlEscape(listener),
 		sqlEscape(prompt), sqlEscape(response),
 		debtDelta, sqlEscape(chamber))
-	return exec.Command("sqlite3", kkPath, q).Run()
+	return runSqlite(kkPath, q)
 }
 
 func appendEpisode(limphaPath, organism, prompt, response string) error {
@@ -181,13 +197,35 @@ func appendEpisode(limphaPath, organism, prompt, response string) error {
 			"temperature, quality) "+
 			"VALUES (strftime('%%s','now'), %s, %s, %s, 0,0,0,0,0,0,0, 1.0, 0);",
 		sqlEscape(organism), sqlEscape(prompt), sqlEscape(response))
-	return exec.Command("sqlite3", limphaPath, q).Run()
+	return runSqlite(limphaPath, q)
 }
 
-// sqlEscape — single-quote a string for inline SQL. We pipe queries to
-// sqlite3 CLI rather than use a driver, so we have to do this ourselves.
-// Phase 5+ swap to a driver removes this entirely.
+// runSqlite shells out to sqlite3 CLI and surfaces stderr on error
+// (audit #28: previous .Run() discarded stderr — constraint failures
+// invisible). Sub-second invocations, no timeout needed.
+func runSqlite(dbPath, query string) error {
+	cmd := exec.Command("sqlite3", dbPath, query)
+	stderrBuf := &strings.Builder{}
+	cmd.Stderr = stderrBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sqlite3 %s: %w (stderr: %s)",
+			filepath.Base(dbPath), err, strings.TrimSpace(stderrBuf.String()))
+	}
+	return nil
+}
+
+// sqlEscape — single-quote a string for inline SQL.
+//
+// audit #27: NUL bytes in argv get truncated by execve. Strip them so a
+// dialogue insert never silently drops on adversarial / accidentally
+// generated zero bytes. SQLite text columns also stop reads on NUL when
+// reading via sqlite3_column_text, so this is correct on both ends.
+//
+// Phase 5+ swap to a driver removes the shell-out and this whole layer.
 func sqlEscape(s string) string {
+	if strings.ContainsRune(s, 0) {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
@@ -210,6 +248,12 @@ func main() {
 	turns := flag.Int("turns", 0, "max ticks before exiting (0 = run forever)")
 	cron := flag.Duration("cron", 3*time.Hour, "cron interval between alternating wakes")
 	flag.Parse()
+
+	// audit #33: negative --turns silently meant "run forever". Reject explicitly.
+	if *turns < 0 {
+		fmt.Fprintln(os.Stderr, "[supervisor] --turns must be >= 0 (0 = forever)")
+		os.Exit(2)
+	}
 
 	home := os.Getenv("HOME")
 	if home == "" {
