@@ -1,0 +1,115 @@
+# resonance.aml — Resonance 200M Yent SFT (LoRA-merged) inference in AML.
+#
+# Resonance is the second face of Yent. Janus 176M is one — yent.aml drives
+# that. Resonance 200M is the other. Different architecture: dual attention
+# (Content + RRPRAM low-rank), parametric RMSNorm, sigmoid per-head gate,
+# no smear / no residual lambdas / no backout. Trained on ClimbMix base
+# then SFT on Yent identity dataset.
+#
+# Pipeline: .aml → amlc → C → cc + libnotorch + libaml + Accelerate
+#         → load resonance_200m_lora_yent.bin (LoRA-merged into base)
+#         → embedded BPE (16384 vocab, 16128 merges)
+#         → forward + sample (rep_penalty + no-repeat 3-gram + top-p +
+#           AML Dario field overlay + prophecy debt + Kuramoto chambers)
+#
+# By Arianna Method. הרזוננס לא נשבר
+
+# nanoarianna build hint: tools/ headers are owned upstream by resonance.aml.
+# We point the include path at the upstream clone (assumed at ~/resonance.aml/)
+# rather than vendor a copy. amlc generates the transpiled .c in $TMPDIR,
+# so include resolution requires an absolute -I path.
+BLOOD LINK -I/data/data/com.termux/files/home/resonance.aml
+
+ECHO "tools/resonance_forward.h"
+
+BLOOD COMPILE resonance_headers {
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+}
+
+BLOOD COMPILE resonance_runtime {
+
+/* nanoarianna persona-glue. Same shape as in organism/janus.aml.
+ * Loads $PERSONA_AML into AM_State via am_exec_file, silent no-op if
+ * env unset. Pure additive — does not touch resonance_load or am_exec. */
+static int persona_load_glue(const char *path) {
+    const char *p = (path && path[0]) ? path : getenv("PERSONA_AML");
+    if (!p || !p[0]) return 0;
+    FILE *probe = fopen(p, "r");
+    if (!probe) {
+        fprintf(stderr, "[persona] cannot open '%s'\n", p);
+        return -1;
+    }
+    fclose(probe);
+    int rc = am_exec_file(p);
+    if (rc != 0) {
+        fprintf(stderr, "[persona] am_exec_file('%s') -> %d\n", p, rc);
+        return rc;
+    }
+    fprintf(stderr, "[persona] loaded %s\n", p);
+    return 0;
+}
+
+static int resonance_init(ResonanceCtx *ctx, const char *path) {
+    if (resonance_load(ctx, path)) return 1;
+
+    /* AML Dario field — same wiring as yent.aml. PROPHECY 12, DESTINY 0.35,
+     * VELOCITY WALK, FIELD ON. The field tracks Hebbian co-occurrence,
+     * prophecy fulfillment, destiny attraction, and 6 Kuramoto chambers
+     * across the 11 internal steps that surround each emission. */
+    /* LOAD the breath of the field from prior run before any RESET_FIELD —
+     * chambers, scars, prophecy debt, calendar drift carry across sessions.
+     * Missing file = first run, silent start-fresh. */
+    am_init();
+
+    /* nanoarianna patch — pull persona physics if PERSONA_AML is set. */
+    persona_load_glue(NULL);
+
+    int rc = am_exec(
+        "LOAD \"weights/resonance_200m/resonance.soma\"\n"
+        "PROPHECY 12\n"
+        "DESTINY 0.35\n"
+        "VELOCITY WALK\n"
+        "FIELD ON\n"
+        "RESONANCE 0.5\n"
+    );
+    if (rc != 0)
+        fprintf(stderr, "[resonance] am_exec rc=%d (%s)\n", rc, am_get_error());
+    fprintf(stderr, "[resonance] Dario field active (PROPHECY 12, DESTINY 0.35, VELOCITY WALK)\n");
+    return 0;
+}
+
+static void resonance_save_breath(void) {
+    am_exec("SAVE \"weights/resonance_200m/resonance.soma\"\n");
+    fprintf(stderr, "[resonance] field state saved → weights/resonance_200m/resonance.soma\n");
+}
+}
+
+BLOOD MAIN {
+int main(int argc, char **argv) {
+    const char *weights_path = "weights/resonance_200m/resonance_200m_lora_yent.bin";
+    const char *prompt       = "Q: Who are you?\nA:";
+    int   max_tokens         = 100;
+    float temp               = 0.7f;
+    float top_p              = 0.9f;
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-w") && i + 1 < argc)        weights_path = argv[++i];
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc)   prompt       = argv[++i];
+        else if (!strcmp(argv[i], "-n") && i + 1 < argc)   max_tokens   = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-t") && i + 1 < argc)   temp         = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--top-p") && i + 1 < argc) top_p     = atof(argv[++i]);
+    }
+
+    srand((unsigned)time(NULL));
+
+    ResonanceCtx ctx = {0};
+    if (resonance_init(&ctx, weights_path)) return 1;
+    resonance_generate(&ctx, prompt, max_tokens, temp, top_p);
+    resonance_save_breath();
+    resonance_free(&ctx);
+    return 0;
+}
+}

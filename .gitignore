@@ -11,6 +11,11 @@ bin/
 *.so
 *.dylib
 
+# amlc transpilation outputs (regenerable from .aml)
+organism/*.c
+organism/janus
+organism/resonance
+
 # weights / checkpoints (pulled from HF)
 weights/
 *.gguf

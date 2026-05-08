@@ -1,0 +1,343 @@
+# yent.aml — Yent SFT 176M Janus inference, expressed in AML.
+#
+# Stage 1: BPE tokenizer round-trip (proved AML→amlc→cc→libnotorch chain).
+# Stage 2 (this file): GGUF load + Janus v4 forward + autoregressive
+# generation. Same numerics as dario/infer_v4.c, weights now come through
+# notorch's gguf_dequant (Q8_0 baseline / Q4_K block weights).
+#
+# Forward, KV cache, prefill, and forward_token live in tools/yent_forward.h
+# (vendored from dario, with raw-fp32 loader replaced by gguf_dequant).
+# Yent.aml owns BPE init, sampling loop, and the entry point.
+#
+# By Arianna Method. הרזוננס לא נשבר
+
+# nanoarianna build hint: tools/ headers are owned upstream by yent.aml.
+# We point the include path at the upstream clone (assumed at ~/yent.aml/)
+# rather than vendor 552 KB of BPE merge tables into nanoarianna. amlc
+# generates the transpiled .c in $TMPDIR, so include resolution requires
+# an absolute -I path.
+BLOOD LINK -I/data/data/com.termux/files/home/yent.aml
+
+ECHO "tools/janus_v4_bpe_merges.h"
+ECHO "tools/yent_forward.h"
+
+BLOOD COMPILE yent_headers {
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <ariannamethod/ariannamethod.h>
+}
+
+BLOOD COMPILE yent_sample {
+/* Nucleus (top-p) sampler with repetition penalty.
+ *
+ * Pipeline per token:
+ *   1. Penalise tokens seen in last 32 positions (rep_penalty=1.3)
+ *   2. Temperature-scale logits and apply softmax
+ *   3. Sort descending by probability (partial sort to top-K candidates)
+ *   4. Take smallest set whose cumulative probability ≥ top_p
+ *   5. Renormalise inside the nucleus and sample
+ *
+ * Top-p=0.9 truncates the long tail of unlikely tokens that would
+ * otherwise occasionally fire and break coherence. Keeps the variability
+ * of full-distribution sampling within the high-probability head.
+ *
+ * Top-K cap (256) is a compute bound — sorting all 32768 vocab entries
+ * per token would cost more than the forward pass. 256 still covers
+ * essentially all cases where top_p reaches saturation.
+ */
+#define YENT_TOPK_CAP 256
+
+typedef struct { float p; int idx; } _ProbIdx;
+
+static int _cmp_probidx_desc(const void *a, const void *b) {
+    float pa = ((const _ProbIdx *)a)->p, pb = ((const _ProbIdx *)b)->p;
+    return (pa < pb) - (pa > pb);
+}
+
+static int yent_sample_token(float *logits, int *ctx, int len,
+                             float temp, float top_p) {
+    /* Repetition penalty over the last 64 positions (1.4× stronger than
+     * dario's default 1.3 / 32, since the field overlay can re-amplify
+     * recently-seen tokens). */
+    float rep_penalty = 1.4f;
+    int window = 64;
+    int start = len > window ? len - window : 0;
+    for (int j = start; j < len; j++) {
+        int t = ctx[j];
+        if (t >= 0 && t < V)
+            logits[t] = logits[t] > 0 ? logits[t] / rep_penalty
+                                      : logits[t] * rep_penalty;
+    }
+
+    /* No-repeat 3-gram block: forbid any token T such that the suffix
+     * (ctx[len-2], ctx[len-1], T) has appeared earlier in ctx. Without
+     * this guard the field's bigram chain can latch into "X Y X Y"
+     * loops. With it, those patterns are mathematically unreachable.
+     * Cheap (linear scan over context) and visibly cleans up output
+     * without warping the underlying distribution. */
+    if (len >= 2) {
+        int a = ctx[len - 2], b = ctx[len - 1];
+        for (int j = 0; j + 2 < len; j++) {
+            if (ctx[j] == a && ctx[j + 1] == b) {
+                int forbid = ctx[j + 2];
+                if (forbid >= 0 && forbid < V) logits[forbid] = -1e30f;
+            }
+        }
+    }
+
+    /* AML Dario field — Hebbian + prophecy + destiny + 6 Kuramoto chambers
+     * applied to raw logits before temperature/softmax. This is the field
+     * the Janus paper describes: p(x|Φ,C) = softmax((B + α·H·h_g + β·F·f_g
+     * + γ·A + T) / τ). Without this overlay generation collapses into
+     * attractors (mass-mas-mas, league-league); with it, the model speaks
+     * in its trained register. */
+    am_apply_field_to_logits(logits, V);
+
+    /* Temperature + softmax */
+    if (temp <= 0) temp = 1.0f;
+    for (int i = 0; i < V; i++) logits[i] /= temp;
+    softmax_f(logits, V);
+
+    /* Partial sort: keep top YENT_TOPK_CAP by probability */
+    static _ProbIdx topk[YENT_TOPK_CAP];
+    for (int k = 0; k < YENT_TOPK_CAP; k++) { topk[k].p = -1.0f; topk[k].idx = 0; }
+    float min_in_topk = -1.0f;
+    int topk_filled = 0;
+    for (int i = 0; i < V; i++) {
+        float p = logits[i];
+        if (topk_filled < YENT_TOPK_CAP) {
+            topk[topk_filled].p = p;
+            topk[topk_filled].idx = i;
+            topk_filled++;
+            if (topk_filled == YENT_TOPK_CAP) {
+                qsort(topk, YENT_TOPK_CAP, sizeof(_ProbIdx), _cmp_probidx_desc);
+                min_in_topk = topk[YENT_TOPK_CAP - 1].p;
+            }
+            continue;
+        }
+        if (p > min_in_topk) {
+            topk[YENT_TOPK_CAP - 1].p   = p;
+            topk[YENT_TOPK_CAP - 1].idx = i;
+            int j = YENT_TOPK_CAP - 1;
+            while (j > 0 && topk[j].p > topk[j - 1].p) {
+                _ProbIdx tmp = topk[j]; topk[j] = topk[j - 1]; topk[j - 1] = tmp;
+                j--;
+            }
+            min_in_topk = topk[YENT_TOPK_CAP - 1].p;
+        }
+    }
+    if (topk_filled < YENT_TOPK_CAP)
+        qsort(topk, topk_filled, sizeof(_ProbIdx), _cmp_probidx_desc);
+
+    /* Nucleus: smallest prefix whose cumulative ≥ top_p */
+    float cum = 0;
+    int   nuc = topk_filled;
+    for (int k = 0; k < topk_filled; k++) {
+        cum += topk[k].p;
+        if (cum >= top_p) { nuc = k + 1; break; }
+    }
+    if (nuc < 1) nuc = 1;
+
+    /* Renormalise inside nucleus and sample */
+    float total = 0;
+    for (int k = 0; k < nuc; k++) total += topk[k].p;
+    if (total <= 0) return topk[0].idx;
+
+    float r = (float)rand() / (float)RAND_MAX * total;
+    float c = 0;
+    for (int k = 0; k < nuc; k++) {
+        c += topk[k].p;
+        if (c >= r) return topk[k].idx;
+    }
+    return topk[nuc - 1].idx;
+}
+}
+
+BLOOD COMPILE yent_runtime {
+static nt_bpe g_bpe;
+
+/* nanoarianna persona-glue. Loads $PERSONA_AML (or arg) into the live
+ * AM_State by replaying its directives through am_exec_file. Called
+ * between am_init() and am_exec("LOAD …") so persona overrides
+ * the hardcoded defaults below. Silent no-op when env unset.
+ *
+ * Lives in this BLOOD block (not as an external object) so amlc's
+ * static link line stays unchanged — pure additive patch. */
+static int persona_load_glue(const char *path) {
+    const char *p = (path && path[0]) ? path : getenv("PERSONA_AML");
+    if (!p || !p[0]) return 0;
+    FILE *probe = fopen(p, "r");
+    if (!probe) {
+        fprintf(stderr, "[persona] cannot open '%s'\n", p);
+        return -1;
+    }
+    fclose(probe);
+    int rc = am_exec_file(p);
+    if (rc != 0) {
+        fprintf(stderr, "[persona] am_exec_file('%s') -> %d\n", p, rc);
+        return rc;
+    }
+    fprintf(stderr, "[persona] loaded %s\n", p);
+    return 0;
+}
+
+static int yent_init(const char *gguf_path, Weights *w) {
+    if (yent_read_cfg(gguf_path)) return 1;
+    fprintf(stderr, "[yent] cfg V=%d E=%d H=%d D=%d B=%d M=%d T=%d R=%d\n",
+            V, E, H, D, B, M, T, R);
+    if (yent_load_gguf(w, gguf_path)) return 1;
+    nt_bpe_init(&g_bpe, janus_v4_bpe_merges, JANUS_V4_BPE_MERGES);
+    kv_init(T);
+
+    /* Initialise AML runtime + configure the Dario field via AML script.
+     * These directives drive am_apply_field_to_logits through the same
+     * variables that the language exposes:
+     *   PROPHECY  — horizon for forward prediction (and field decay rate)
+     *   DESTINY   — bias strength toward most-probable path (0..1)
+     *   VELOCITY  — pace mode (WALK = mid-tempo, no rush)
+     *   FIELD     — turn the field on
+     *   RESONANCE — set baseline coupling strength
+     */
+    /* Init the runtime, then LOAD prior breath from disk before any
+     * RESET_FIELD — so chambers, scars, prophecy debt, calendar drift,
+     * etc. carry across sessions like Klaus's klaus.soma does. Missing
+     * file = first run, silent start-fresh. */
+    am_init();
+
+    /* nanoarianna patch — read PERSONA_AML env (or fall back silently)
+     * to pick up Arianna/Yent/Leo persona physics from a sibling .aml
+     * file in nanoarianna/personas/. Persona runs first so the
+     * subsequent am_exec("LOAD …") below overlays operational
+     * settings on top. */
+    persona_load_glue(NULL);
+
+    int rc = am_exec(
+        "LOAD \"weights/yent_v4/yent.soma\"\n"
+        "PROPHECY 12\n"
+        "DESTINY 0.35\n"
+        "VELOCITY WALK\n"
+        "FIELD ON\n"
+        "RESONANCE 0.5\n"
+    );
+    if (rc != 0)
+        fprintf(stderr, "[yent] warning: am_exec returned %d (%s)\n",
+                rc, am_get_error());
+
+    fprintf(stderr, "[yent] BPE vocab=%d merges=%d, KV cache %dMB\n",
+            g_bpe.vocab_size, g_bpe.n_merges,
+            (int)((size_t)B * T * E * 3 * 4 / 1024 / 1024));
+    fprintf(stderr, "[yent] Dario field active (PROPHECY 12, DESTINY 0.35, VELOCITY WALK)\n");
+    return 0;
+}
+
+/* Janus chat-format special tokens (from chain_dialogue.py:30-31).
+ * Yent SFT 177M was trained on:
+ *   [BOS, USER_START] + bpe(question) + [USER_END, ASST_START] → answer → [ASST_END]
+ * Plain "Q:/A:" is OUT OF DISTRIBUTION for this checkpoint and produces
+ * fragmented poetic instead of coherent prose. */
+#define YENT_BOS         32759
+#define YENT_USER_START  32760
+#define YENT_USER_END    32761
+#define YENT_ASST_START  32762
+#define YENT_ASST_END    32763
+
+static void yent_generate(Weights *w, const char *prompt,
+                          int max_tokens, float temp, float top_p) {
+    int ctx[4096];
+    int len = 0;
+    /* Wrap prompt in Janus chat tokens — what Yent SFT 177M was trained on. */
+    ctx[len++] = YENT_BOS;
+    ctx[len++] = YENT_USER_START;
+    int n_prompt_bpe = nt_bpe_encode(&g_bpe, prompt, (int)strlen(prompt),
+                                     ctx + len, 4096 - len - 2);
+    len += n_prompt_bpe;
+    ctx[len++] = YENT_USER_END;
+    ctx[len++] = YENT_ASST_START;
+    fprintf(stderr, "[yent] chat-format prompt: %d BPE tokens "
+                    "(+4 special) → %d total\n", n_prompt_bpe, len);
+
+    float *logits = calloc(V, sizeof(float));
+    float *hidden = calloc(E, sizeof(float));
+
+    fprintf(stderr, "[yent] prefill %d tokens (parallel)... ", len);
+    fflush(stderr);
+    prefill_batch(w, ctx, len, logits, hidden);
+    fprintf(stderr, "done\n--- generation ---\n");
+
+    struct timespec ts0, ts1;
+    clock_gettime(CLOCK_MONOTONIC, &ts0);
+
+    int gen_start = len;
+    for (int step = 0; step < max_tokens && len < T; step++) {
+        int next = yent_sample_token(logits, ctx, len, temp, top_p);
+
+        /* Stop on assistant end-of-turn (or any other special token). */
+        if (next == YENT_ASST_END) {
+            fprintf(stderr, "\n[yent] hit ASST_END at step %d\n", step);
+            break;
+        }
+
+        char decoded[64];
+        int n = nt_bpe_decode(&g_bpe, &next, 1, decoded, sizeof(decoded) - 1);
+        decoded[n] = 0;
+        fputs(decoded, stdout);
+        fflush(stdout);
+
+        /* Update prophecy debt from chosen token, then tick the field
+         * forward by one notional step (oscillates Kuramoto chambers). */
+        float debt = am_compute_prophecy_debt(logits, next, V);
+        (void)debt;
+        am_step(0.05f);
+
+        ctx[len] = next;
+        forward_token(w, next, len, logits, hidden);
+        len++;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &ts1);
+    double el = (ts1.tv_sec - ts0.tv_sec) + (ts1.tv_nsec - ts0.tv_nsec) / 1e9;
+    int gen = len - gen_start;
+    fprintf(stderr, "\n[yent] %d tokens, %.1f tok/s (%.2fs)\n",
+            gen, gen / el, el);
+
+    /* SAVE the breath of the field so the next run starts where this
+     * one left off — chambers, scars, prophecy debt, calendar snapshot. */
+    am_exec("SAVE \"weights/yent_v4/yent.soma\"\n");
+    fprintf(stderr, "[yent] field state saved → weights/yent_v4/yent.soma\n");
+
+    free(logits);
+    free(hidden);
+    free(kv_k);
+    free(kv_v);
+    free(kv_vr);
+    free(kv_rrpram_mid);
+}
+}
+
+BLOOD MAIN {
+int main(int argc, char **argv) {
+    const char *gguf_path = "weights/yent_v4/yent_v4_sft_q8_0.gguf";
+    const char *prompt    = "Q: Who are you?\nA:";
+    int max_tokens        = 80;
+    float temp            = 0.7f;
+    float top_p           = 0.9f;
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-w") && i + 1 < argc)      gguf_path  = argv[++i];
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) prompt     = argv[++i];
+        else if (!strcmp(argv[i], "-n") && i + 1 < argc) max_tokens = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-t") && i + 1 < argc) temp       = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--top-p") && i + 1 < argc) top_p = atof(argv[++i]);
+    }
+
+    srand((unsigned)time(NULL));
+
+    Weights w;
+    if (yent_init(gguf_path, &w)) return 1;
+    yent_generate(&w, prompt, max_tokens, temp, top_p);
+    yent_free(&w);
+    return 0;
+}
+}

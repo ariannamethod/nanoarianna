@@ -4,6 +4,64 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 3b (organism wrappers — janus.aml + resonance.aml build clean)
+
+The AML half of Phase 3. Two organism wrappers landed in `organism/` —
+upstream `yent.aml` and `resonance.aml` copied with one minimal additive
+patch each (persona-glue function + one-line call). Both build cleanly
+through `amlc` on aarch64-Termux.
+
+**`organism/janus.aml`** — Janus 176M wrapper (copy of `~/yent.aml/yent.aml` 303 → 320 lines):
+- New `BLOOD COMPILE yent_runtime` prelude defines `static int persona_load_glue(const char *path)` — env-resolved (`PERSONA_AML` or arg), silent no-op when unset, calls `am_exec_file()` to replay the persona's directives into the live AM_State.
+- One-line call `persona_load_glue(NULL);` inserted in `yent_init` between `am_init();` and the existing `am_exec("LOAD …; PROPHECY 12; DESTINY 0.35; …")`. Persona runs first, hardcoded defaults overlay on top — so persona files in `personas/init_*.aml` actually take effect (not get overridden).
+- Top-of-file `BLOOD LINK -I/data/data/com.termux/files/home/yent.aml` so cc resolves `tools/janus_v4_bpe_merges.h` + `tools/yent_forward.h` against upstream clone (no vendoring of 552 KB BPE merge table into nanoarianna).
+
+**`organism/resonance.aml`** — Resonance 200M wrapper (copy of `~/resonance.aml/resonance.aml` 83 → 105 lines):
+- Identical persona-glue shape in `BLOOD COMPILE resonance_runtime`.
+- Same `BLOOD LINK -I/data/data/com.termux/files/home/resonance.aml` upstream-include pattern.
+
+**`organism/Makefile`** — thin wrapper around `amlc`:
+- `make all` builds both organisms; `make janus` / `make resonance` build one. `make check-deps` pre-flights `amlc` + `libaml.a` + `libnotorch.a` + `libopenblas.so` presence at `$PREFIX`.
+- Sets `AML_PREFIX=$(PREFIX)` automatically so `amlc` finds Termux's `libaml.a` / `libnotorch.a` (default is `/opt/homebrew`, the Mac path).
+- `make clean` removes built binaries + amlc's emitted `*.c` intermediates.
+
+**Build verification** (provenance: `make all` output this session):
+
+```
+amlc: parsed 3 BLOOD block(s), 2 ECHO(s), 1 LINK(s), BLOOD MAIN present
+amlc: generated 320 lines of C (12187 bytes)
+amlc: linking libnotorch libaml openblas
+amlc: success → ./janus            (536 192 bytes)
+
+amlc: parsed 2 BLOOD block(s), 1 ECHO(s), 1 LINK(s), BLOOD MAIN present
+amlc: generated 91 lines of C (3402 bytes)
+amlc: linking libnotorch libaml openblas
+amlc: success → ./resonance        (250 448 bytes)
+```
+
+**Smoke** (no weights yet — Phase 4 RunPod delivers them): both binaries
+fail gracefully at `gguf_open` / weight `fopen` step with clear messages
+before `persona_load_glue` reaches its `am_exec_file` call. Persona-glue
+itself is link-verified (binaries link without `am_exec_file` undefined),
+runtime-verified once weights land.
+
+**.gitignore extended:** `organism/*.c` (amlc transpilation, regenerable),
+`organism/janus`, `organism/resonance` (binaries).
+
+**Phase 3 complete (a + b).** The two-organism dialogue cycle now has:
+- Schedule (cron + event triggers in Go)
+- Supervisor (model-swap dispatcher, mutex pattern via fork/exec)
+- Persona loader (env-driven, plumbed into both organism wrappers)
+- KK + Limpha I/O (supervisor side, sqlite3 CLI shell-out)
+- Build path (`make all` in `organism/` produces runnable binaries)
+
+Stub mode (`supervisor --stub`) verifies dialogue cycle with `echo`.
+Real organism invocation waits for Phase 4 RunPod-delivered weights.
+
+**Next:** Phase 4 — RunPod sweep brief + execution. Separate plan file.
+
+---
+
 ## 2026-05-09 — Phase 3a (supervisor + schedule, dialogue cycle alive in stub)
 
 orchestra/ landed. The two-organism dialogue cycle runs end-to-end in stub
