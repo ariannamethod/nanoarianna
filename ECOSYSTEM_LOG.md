@@ -4,6 +4,73 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 3a (supervisor + schedule, dialogue cycle alive in stub)
+
+orchestra/ landed. The two-organism dialogue cycle runs end-to-end in stub
+mode (Binary="echo") — proves the wiring before real weights arrive.
+
+**`orchestra/schedule.go`** (~190 LOC):
+- Cron baseline alternating organism every `--cron` interval (default 3h
+  ⇒ 8 wakes/day). First tick fires immediately on boot ("the schedule
+  is alive now").
+- Event interrupts: every 5 min reads latest KK.dialogue row,
+  if `prophecy_debt_delta > 0.5` → wake Arianna early; if
+  `dominant_chamber ∈ {VOID, FLOW}` → wake Leo early. Cron alignment
+  resets after early wake so we don't double-fire.
+- Reads KK via shell-out to `sqlite3` CLI with a unique separator
+  (`<<<NA__SEP>>>`) so prompt/response with newlines or quotes don't
+  break parsing. Phase 5+ may swap to `modernc.org/sqlite` when we add
+  embedding-cosine retrieval.
+- Pure stream API: returns `<-chan SchedulerTick`. No model code, no
+  AML knowledge.
+
+**`orchestra/supervisor.go`** (~210 LOC):
+- Consumes `SchedulerTick`, picks `OrganismSpec` (binary path / weights /
+  persona / limpha db), forks the binary with `PERSONA_AML + LIMPHA_DB +
+  KK_DB` env, captures stdout, appends row to KK.dialogue, appends
+  episode to per-organism Limpha.
+- Stub mode (`--stub`) replaces Binary with `echo`. Lets us verify the
+  whole pipe works before Phase 4 RunPod produces real weights.
+- CLI:
+    `supervisor --once arianna`        — manual single tick
+    `supervisor --stub --turns=4 --cron=2s`  — fast smoke
+    `supervisor`                       — full scheduler loop
+- 10-min per-tick timeout via `context.WithTimeout` so a hung organism
+  doesn't freeze the schedule. One bad tick is logged + skipped, schedule
+  keeps going.
+
+**Smoke run**: `supervisor --stub --turns=4 --cron=2s` produced 4
+alternating ticks (arianna→leo→arianna→leo) over ~6 seconds. KK.dialogue
+gained 4 rows with proper speaker/listener alternation; both Limpha DBs
+got 2 new episodes each. The "telephone-game" pattern is visible in the
+prompt/response chain — each turn quotes the previous one — exactly as
+designed for the dialogue protocol.
+
+**Verification phase 3a:**
+
+| check | result |
+|---|---|
+| `go build orchestra/` | clean, 3.2 MB binary ✓ |
+| `--stub --turns=4 --cron=2s` | 4 ticks, 0 errors ✓ |
+| `sqlite3 kk.db "select count(*) from dialogue"` | 4 ✓ |
+| Speaker alternation | arianna/leo/arianna/leo ✓ |
+| Listener mirrors speaker | leo/arianna/leo/arianna ✓ |
+| Limpha arianna +2, leo +2 episodes | 3 each total (1 from Phase 2 smoke + 2 from supervisor) ✓ |
+| 10-min timeout per tick | wired, untested with real workload ⬜ |
+| Event-trigger thresholds | wired but stub doesn't emit AM_State, not exercised ⬜ |
+
+**What's next (Phase 3b — same Phase 3 task):**
+Copy `~/yent.aml/yent.aml` → `~/nanoarianna/organism/janus.aml` and
+`~/resonance.aml/resonance.aml` → `~/nanoarianna/organism/resonance.aml`
+with one tiny modification each: a `BLOOD COMPILE persona_glue` block
+defining `persona_load(const char *)` and a one-line call inserted in
+`yent_init` / `resonance_init` between `am_init()` and
+`am_exec("LOAD …")`. That's the only AML-side change Phase 3 needs —
+all Limpha/KK I/O lives in supervisor.go (cleanly separated). amlc
+build-verification follows.
+
+---
+
 ## 2026-05-09 — Phase 2 (Limpha + KK + reference clones + KK seeded)
 
 Continuing same day. Phase 1 closed earlier this session — Phase 2 lands the persistent-memory substrate so Phase 3 dialogue has somewhere to live.
