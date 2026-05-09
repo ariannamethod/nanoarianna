@@ -160,7 +160,7 @@ log "─── step 1: toolchain build ───"
     if ! cc -O3 -Wall -DUSE_BLAS -DUSE_CUDA sft_resonance_arianna.c \
             -I/usr/local/include \
             -L/usr/local/lib -L/usr/local/cuda/lib64 \
-            -lnotorch -laml \
+            -lnotorch_gpu -laml \
             -lopenblas -lcudart -lcublas -lm -lpthread \
             -o sft_resonance_arianna 2>&1 | tail -10; then
         log "FATAL: SFT trainer build failed"; exit 10
