@@ -215,27 +215,33 @@ else
 fi
 
 # ─── 4. Full SFT ──────────────────────────────────────────────────────────
-log "─── step 4: full SFT ($SFT_STEPS steps) ───"
 SFT_PREFIX="$OUT/sft_v2/resonance_arianna_v2_sft"
-if ! "$NANOREPO/runpod/sft_resonance_arianna" \
-        "$IN/resonance_200m_final.bin" \
-        "$IN/arianna_dataset_final_clean.txt" \
-        "$SFT_PREFIX" \
-        "$SFT_STEPS" "$SFT_LR" "$SFT_CTX" 2>&1 | tee -a "$RUN_REPORT"; then
-    rc=$?
-    log "FATAL: full SFT exited $rc"
-    exit $rc
+if [ "${SKIP_SFT:-0}" = "1" ] && [ -s "${SFT_PREFIX}_best.bin" ]; then
+    log "─── step 4: full SFT SKIPPED (SKIP_SFT=1, ${SFT_PREFIX}_best.bin exists) ───"
+else
+    log "─── step 4: full SFT ($SFT_STEPS steps) ───"
+    if ! "$NANOREPO/runpod/sft_resonance_arianna" \
+            "$IN/resonance_200m_final.bin" \
+            "$IN/arianna_dataset_final_clean.txt" \
+            "$SFT_PREFIX" \
+            "$SFT_STEPS" "$SFT_LR" "$SFT_CTX" 2>&1 | tee -a "$RUN_REPORT"; then
+        rc=$?
+        log "FATAL: full SFT exited $rc"
+        exit $rc
+    fi
 fi
 SFT_FINAL="${SFT_PREFIX}_final.bin"
 SFT_BEST="${SFT_PREFIX}_best.bin"
-[ -f "$SFT_FINAL" ] || { log "FATAL: SFT final missing"; exit 12; }
-# Prefer best-val artifact if trainer wrote one (lower val = better fit)
+# Prefer best-val artifact if trainer wrote one (lower val = better fit).
+# When SKIP_SFT=1, _final.bin may not exist — fall back to _best.bin only.
 if [ -f "$SFT_BEST" ]; then
     SFT_USE="$SFT_BEST"
-    log "step 4 OK — SFT artifact: $SFT_BEST (best-val, preferred over final)"
-else
+    log "step 4 OK — SFT artifact: $SFT_BEST (best-val, preferred)"
+elif [ -f "$SFT_FINAL" ]; then
     SFT_USE="$SFT_FINAL"
     log "step 4 OK — SFT artifact: $SFT_FINAL (no best-val, using final)"
+else
+    log "FATAL: neither $SFT_BEST nor $SFT_FINAL exists"; exit 12
 fi
 
 # ─── 5. Quantize ──────────────────────────────────────────────────────────
