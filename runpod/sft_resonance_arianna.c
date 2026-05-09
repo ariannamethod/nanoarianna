@@ -41,6 +41,9 @@
  */
 
 #include <ariannamethod/notorch.h>
+#ifdef USE_CUDA
+#include <ariannamethod/notorch_cuda.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -477,6 +480,14 @@ int main(int argc, char **argv) {
     }
 
     nt_seed(42);
+#ifdef USE_CUDA
+    if (gpu_init() == 0) {
+        nt_set_gpu_mode(1);
+        fprintf(stderr, "[sft] GPU mode: ON (cuBLAS)\n");
+    } else {
+        fprintf(stderr, "[sft] GPU init failed — falling back to CPU\n");
+    }
+#endif
     nt_schedule sched = nt_schedule_cosine(base_lr, steps / 20, steps, base_lr * 0.1f);
     nt_nan_guard guard = nt_nan_guard_new();
 
@@ -589,5 +600,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[sft] nans=%d skipped=%d\n",
             guard.total_nan_count, guard.skipped_steps);
     fprintf(stderr, "[sft] final → %s\n", final_path);
+#ifdef USE_CUDA
+    if (nt_get_gpu_mode()) gpu_shutdown();
+#endif
     return 0;
 }

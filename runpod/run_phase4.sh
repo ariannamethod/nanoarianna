@@ -47,9 +47,9 @@ YENTAML="${YENTAML:-$WORK/yent.aml}"
 RESAML="${RESAML:-$WORK/resonance.aml}"
 HF_REPO="${HF_REPO:-ataeff/nanoarianna}"
 BUDGET_USD="${BUDGET_USD:-18}"
-SFT_STEPS="${SFT_STEPS:-300}"
+SFT_STEPS="${SFT_STEPS:-1500}"
 SFT_LR="${SFT_LR:-3e-5}"
-SFT_CTX="${SFT_CTX:-256}"
+SFT_CTX="${SFT_CTX:-512}"
 
 DATE_TAG="$(date +%F)"
 TIMESTAMP="$(date +%FT%H%M%S)"
@@ -123,13 +123,13 @@ fi
 log "─── step 1: toolchain build ───"
 {
     cd "$NOTORCH"
-    log "  notorch make..."
+    log "  notorch make (USE_CUDA=1)..."
     make clean >/dev/null 2>&1 || true
-    if ! make -j8 2>&1 | tail -5; then
-        log "FATAL: notorch build failed"; exit 10
+    if ! make USE_CUDA=1 lib -j8 2>&1 | tail -5; then
+        log "FATAL: notorch GPU build failed"; exit 10
     fi
     log "  notorch install → /usr/local..."
-    if ! make install PREFIX=/usr/local 2>&1 | tail -3; then
+    if ! make USE_CUDA=1 install PREFIX=/usr/local 2>&1 | tail -3; then
         log "FATAL: notorch install failed"; exit 10
     fi
 
@@ -155,15 +155,13 @@ log "─── step 1: toolchain build ───"
         log "FATAL: resonance build failed"; exit 10
     fi
 
-    log "  SFT trainer build..."
+    log "  SFT trainer build (USE_CUDA)..."
     cd "$NANOREPO/runpod"
-    # After install, libnotorch.a + libariannamethod.a are in /usr/local/lib,
-    # headers in /usr/local/include/ariannamethod/. Link against system paths.
-    if ! cc -O3 -Wall -DUSE_BLAS sft_resonance_arianna.c \
+    if ! cc -O3 -Wall -DUSE_BLAS -DUSE_CUDA sft_resonance_arianna.c \
             -I/usr/local/include \
-            -L/usr/local/lib \
+            -L/usr/local/lib -L/usr/local/cuda/lib64 \
             -lnotorch -laml \
-            -lopenblas -lm -lpthread \
+            -lopenblas -lcudart -lcublas -lm -lpthread \
             -o sft_resonance_arianna 2>&1 | tail -10; then
         log "FATAL: SFT trainer build failed"; exit 10
     fi
