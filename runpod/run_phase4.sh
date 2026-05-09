@@ -246,13 +246,13 @@ log "─── step 5: quantize ───"
     python3 "$NANOREPO/runpod/resonance_to_gguf.py" \
         "$SFT_USE" \
         "$OUT/slot_arianna/resonance_v2_arianna_q8_0.gguf" \
-        --quant Q8_0 2>&1 | tail -5
+        --quant q8_0 2>&1 | tail -5
 
     log "  Resonance Arianna SFT → GGUF Q4_K..."
     python3 "$NANOREPO/runpod/resonance_to_gguf.py" \
         "$SFT_USE" \
         "$OUT/slot_arianna/resonance_v2_arianna_q4_k.gguf" \
-        --quant Q4_K 2>&1 | tail -5
+        --quant q4_k 2>&1 | tail -5
 
     log "  Janus Leo SFT → GGUF Q8_0..."
     JANUS_TO_GGUF="$YENTAML/tools/janus_to_gguf.py"
@@ -261,13 +261,13 @@ log "─── step 5: quantize ───"
     python3 "$JANUS_TO_GGUF" \
         "$IN/janus_v4_sft_leo.bin" \
         "$OUT/slot_leo/janus_v4_leo_q8_0.gguf" \
-        --quant Q8_0 2>&1 | tail -5
+        --quant q8_0 2>&1 | tail -5
 
     log "  Janus Leo SFT → GGUF Q4_K..."
     python3 "$JANUS_TO_GGUF" \
         "$IN/janus_v4_sft_leo.bin" \
         "$OUT/slot_leo/janus_v4_leo_q4_k.gguf" \
-        --quant Q4_K 2>&1 | tail -5
+        --quant q4_k 2>&1 | tail -5
 } || { log "FATAL: quant failed"; exit 13; }
 log "step 5 OK"
 
