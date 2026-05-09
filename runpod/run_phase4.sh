@@ -180,14 +180,17 @@ log "─── step 2: 4b verify ───"
         log "FATAL: notorch_test did not pass"; exit 11
     fi
 
-    log "  janus --help..."
-    "$NANOREPO/organism/janus" --help 2>&1 | head -3 || {
-        log "FATAL: janus --help broken"; exit 11
+    log "  janus binary executable..."
+    [ -x "$NANOREPO/organism/janus" ] || {
+        log "FATAL: janus binary missing/non-executable"; exit 11
     }
-
-    log "  resonance --help..."
-    "$NANOREPO/organism/resonance" --help 2>&1 | head -3 || {
-        log "FATAL: resonance --help broken"; exit 11
+    log "  resonance binary executable..."
+    [ -x "$NANOREPO/organism/resonance" ] || {
+        log "FATAL: resonance binary missing/non-executable"; exit 11
+    }
+    log "  sft_resonance_arianna binary executable..."
+    [ -x "$NANOREPO/runpod/sft_resonance_arianna" ] || {
+        log "FATAL: SFT trainer binary missing/non-executable"; exit 11
     }
 } || exit 11
 log "step 2 OK"
