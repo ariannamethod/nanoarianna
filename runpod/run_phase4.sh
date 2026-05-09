@@ -64,7 +64,34 @@ log "  Phase 4 master driver"
 log "  WORK=$WORK  IN=$IN  OUT=$OUT  HF=$HF_REPO  budget=\$$BUDGET_USD"
 log "════════════════════════════════════════════════════════"
 
-# ─── 0. Budget watchdog (background) ──────────────────────────────────────
+# ─── 0a. HF pre-flight download (verified paths via HF API 2026-05-09) ────
+log "─── step 0a: HF pre-flight download → $IN ───"
+mkdir -p "$IN"
+if [ -z "${HF_TOKEN:-}" ]; then
+    log "FATAL: HF_TOKEN unset — cannot fetch base weights / corpus"; exit 9
+fi
+hf_pull() {
+    local repo="$1" path="$2" dst="$3"
+    if [ -f "$dst" ]; then
+        log "  cached: $dst"; return 0
+    fi
+    log "  fetching $repo/$path → $dst"
+    curl -fL --retry 3 -H "Authorization: Bearer $HF_TOKEN" \
+        "https://huggingface.co/$repo/resolve/main/$path" -o "$dst" \
+        2>&1 | tail -3
+}
+hf_pull "ataeff/resonance"   "checkpoints/resonance_200m_final.bin" \
+        "$IN/resonance_200m_final.bin"
+hf_pull "ataeff/nanoarianna" "arianna_dataset_final_clean.txt" \
+        "$IN/arianna_dataset_final_clean.txt"
+hf_pull "ataeff/janus4"      "janus/bins/janus_v4_sft_leo.bin" \
+        "$IN/janus_v4_sft_leo.bin"
+for f in resonance_200m_final.bin arianna_dataset_final_clean.txt janus_v4_sft_leo.bin; do
+    [ -s "$IN/$f" ] || { log "FATAL: $IN/$f missing or empty"; exit 9; }
+done
+log "step 0a OK — corpus + 2 base weights staged"
+
+# ─── 0b. Budget watchdog (background) ─────────────────────────────────────
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
     log "starting budget watchdog (limit \$$BUDGET_USD)"
     bash "$NANOREPO/runpod/budget_watchdog.sh" \
@@ -170,6 +197,7 @@ log "step 4 OK — SFT artifact: $SFT_FINAL"
 log "─── step 5: quantize ───"
 {
     log "  Resonance Arianna SFT → GGUF Q8_0..."
+    mkdir -p "$OUT/slot_arianna"
     python3 "$NANOREPO/runpod/resonance_to_gguf.py" \
         "$SFT_FINAL" \
         "$OUT/slot_arianna/resonance_v2_arianna_q8_0.gguf" \
@@ -181,17 +209,18 @@ log "─── step 5: quantize ───"
         "$OUT/slot_arianna/resonance_v2_arianna_q4_k.gguf" \
         --quant Q4_K 2>&1 | tail -5
 
-    log "  Janus Leo base → GGUF Q8_0..."
+    log "  Janus Leo SFT → GGUF Q8_0..."
     JANUS_TO_GGUF="$YENTAML/tools/janus_to_gguf.py"
     [ -f "$JANUS_TO_GGUF" ] || JANUS_TO_GGUF="$NANOREPO/runpod/janus_to_gguf.py"
+    mkdir -p "$OUT/slot_leo"
     python3 "$JANUS_TO_GGUF" \
-        "$IN/janus_v4_leo_final.bin" \
+        "$IN/janus_v4_sft_leo.bin" \
         "$OUT/slot_leo/janus_v4_leo_q8_0.gguf" \
         --quant Q8_0 2>&1 | tail -5
 
-    log "  Janus Leo base → GGUF Q4_K..."
+    log "  Janus Leo SFT → GGUF Q4_K..."
     python3 "$JANUS_TO_GGUF" \
-        "$IN/janus_v4_leo_final.bin" \
+        "$IN/janus_v4_sft_leo.bin" \
         "$OUT/slot_leo/janus_v4_leo_q4_k.gguf" \
         --quant Q4_K 2>&1 | tail -5
 } || { log "FATAL: quant failed"; exit 13; }
