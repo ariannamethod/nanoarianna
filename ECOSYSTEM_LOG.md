@@ -4,6 +4,65 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 4 brief v3 final (post-third-Opus-audit + spec polish)
+
+Third Opus pass on v3. Verdict: **YELLOW (tactical fixes before pod,
+low risk)**. **0 BLOCKERs**, 6 FIX items, 3 NITs — substantially
+cleaner than v2 as expected. All 5 v2 BLOCKERs verified
+substantively closed in code:
+
+- A.1/A.2 globals + argv flags traced through `organism/janus.aml`
+  lines 57-58, 73, 147-148, 350-351 + `organism/tools/resonance_forward.h`
+  lines 317, 322 + `organism/resonance.aml` lines 21, 105 — all
+  verified by direct file read.
+- B.1 Resonance dims (`n_embd=768, n_head=12, head_dim=64, n_layer=20,
+  rrpram_rank=48, context_len=2048, ffn_dim=2048, vocab_size=16384`)
+  verified byte-exact against
+  `huggingface.co/ataeff/resonance/model.py:222-231` `RESONANCE_200M`.
+- B.2 RRPRAM tape support real: `nt_rrpram_lowrank_attention`
+  `notorch.c:3232`, "rrpram U buffer persisted to backward via tape"
+  `:3258-3259`, `tests/test_rrpram_lr` binary present (99032 bytes),
+  ECOSYSTEM_LOG.md captures PASS evidence.
+- D.1 RS02 spec verified against `resonance_forward.h:259-281`
+  read order; np formula recomputed three ways (brief / header / assign)
+  all give 199,195,632 floats; total = 4 + 36 + 4 + 16128×12 +
+  199,195,632×4 = **796,976,108 bytes byte-exact** to observed
+  Yent SFT bin size.
+
+Tactical FIX items applied this commit (spec polish only —
+no code changes needed):
+
+- F7+F8: corrected three notorch op names in §6-point §6 line 68
+  to actual `notorch.h` symbols: `nt_seq_matvec_t → nt_seq_linear_t`,
+  `nt_rope_even_odd → nt_rope_freq` (with freq_base=10000.0f),
+  `nt_seq_swiglu → nt_swiglu`. Added explicit note that the per-head
+  sigmoid gate is composed from `nt_sigmoid` + broadcast multiply +
+  add (~30 LOC bespoke fragment), not a single notorch op.
+- F9: `notorch/gguf.c:354` → `notorch/gguf.c:303-336` (the actual
+  `gguf_dequant` switch; line 354 is the info-printer dtype-name
+  array). Q5_0 case at `:324`, Q6_K case at `:333`.
+- F10+F13: added pre-flight item 4b — rebuild on pod first action,
+  re-verify both binaries accept `--top-k`/`--top-p`/`--rep-pen`
+  flags and exit with weights-not-found rather than unknown-flag.
+  Termux→x86_64 portability bug catch before SFT spends pod hours.
+- F11: replaced "increasing loss / unbounded gradient norm" hand-wavy
+  kill criteria with concrete numbers: loss-rising kill
+  `loss[50] > loss[10]`; any NaN immediate halt; gradient-norm kill
+  `||g||₂_step50 > 100·||g||₂_step1` or absolute `> 1e3`. On any kill,
+  snapshot to `runs/sft_arianna_smoke_failed/`, push to HF for audit,
+  abort pod plan.
+
+**"Save everything" checklist** added per Oleg's reminder
+("главное не забывай все сохранять"): five artifact classes with
+explicit destinations. Quantization on same pod (Oleg's
+"квантизируй там же") confirmed. SFT raw fp32 .bin pushed to HF
+`sft_v2/` immediately post-SFT (audit D.2) — protects against any
+later watchdog kill. No "figure out at the end" phases.
+
+**Brief now launch-ready.** Tactical-fix-debt = 0 after this commit.
+
+---
+
 ## 2026-05-09 — Phase 4 brief v3 (post-second-Opus-audit + organism argv patches landed)
 
 After v2 landed, ran second Opus pass (per Oleg "ещё раз прогнать

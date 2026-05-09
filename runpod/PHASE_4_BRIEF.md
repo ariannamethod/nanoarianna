@@ -65,7 +65,7 @@ Per `memory/feedback_failure_unsolicited_finetune_2026_04_27.md`. All six concre
 
 6. **Script:** `notorch + Chuck` SFT path. Builds on the **verified** RRPRAM-training-mode infrastructure: `nt_rrpram_lowrank_attention` (`notorch.c:3232`) for forward, persisted backward via tape (`notorch.c:3258-3259`), grad-check passes (`tests/test_rrpram_lr` PASS on aarch64-Termux per phone-2 Phase 1 run). Chuck optimizer (`notorch/notorch.h` Chuck step path), cosine decay + NaN guard.
 
-   **New file:** `~/work/nanoarianna/runpod/sft_resonance_arianna.c` (~600-1000 LOC realistic estimate per audit B.2). Follows the pattern of `notorch/examples/train_llama3_bpe.c` (BPE setup + tape forward + Chuck step + checkpoint) but with Resonance's forward shape: per-block `wr_a + wr_b + gate + norm1 + wq/wk/wv/wo + norm2 + mlp_gate/up/down`. Reuses notorch primitives: `nt_seq_rmsnorm` (parametric variant), `nt_seq_matvec_t`, `nt_rrpram_lowrank_attention`, `nt_rope_even_odd`, `nt_seq_swiglu`, `nt_seq_cross_entropy`, Chuck step, tape backward.
+   **New file:** `~/work/nanoarianna/runpod/sft_resonance_arianna.c` (~600-1000 LOC realistic estimate per audit B.2). Follows the pattern of `notorch/examples/train_llama3_bpe.c` (BPE setup + tape forward + Chuck step + checkpoint) but with Resonance's forward shape: per-block `wr_a + wr_b + gate + norm1 + wq/wk/wv/wo + norm2 + mlp_gate/up/down`. Reuses notorch primitives (audit-corrected names per `notorch/notorch.h` actuals): `nt_seq_rmsnorm` (parametric variant via per-channel weight), `nt_seq_linear_t` (Q/K/V/O projections + RRPRAM Wr_a/Wr_b — was misnamed `nt_seq_matvec_t` in v2), `nt_rrpram_lowrank_attention` (verified backward via tape), `nt_rope_freq(idx, T, head_dim, 10000.0f)` (mathematically equivalent to `resonance_forward.h:56-69` even/odd interleave at base 10000 — was misnamed `nt_rope_even_odd` in v2), `nt_swiglu` (no `_seq` variant — apply per-position), `nt_seq_cross_entropy`, Chuck step, tape backward. **Per-head sigmoid gate** for the 2-way blend `g·content + (1-g)·rrpram` (`resonance_forward.h:217-223`) is **composed** from `nt_sigmoid` + per-head broadcast multiply + add — not a single notorch op; ~30 LOC of bespoke fragment in the trainer.
 
    **NOT used:** the Python `train.py` on `ataeff/resonance` HF (uses banned-word optimizer per `feedback_adam_ban_2026_04_29.md`). We don't run it; reference-only.
 
@@ -126,7 +126,14 @@ Cells available for phone-2 (phone-1 takes Janus + Yent):
 1. **HF token verified:** `curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami-v2` returns `{"name":"ataeff",...}`.
 2. **`ataeff/nanoarianna` repo verified:** API HEAD on `huggingface.co/api/models/ataeff/nanoarianna/tree/main` returns 200 with `{README.md, .gitattributes, arianna_dataset_final_clean.txt, arianna_en_sft.jsonl}`. Repo is public, GPL-3.0; created by Oleg.
 3. **`LICENSE-WEIGHTS` source confirmed:** `~/resonance.aml/LICENSE-WEIGHTS` exists (1439 bytes, "Janus Identity License v1.0"). Will be copied to `ataeff/nanoarianna/LICENSE-WEIGHTS` at upload.
-4. **organism/* argv patches verified on phone-2:** `cd ~/nanoarianna/organism && make all` builds clean; `./janus --top-k 40 --rep-pen 1.3 -p test 2>&1 | head -1` shows graceful gguf-not-found (flags accepted, not unrecognized). **Verified this session, this commit.**
+4. **organism/* argv patches build path verified on phone-2 (aarch64-Termux):** `cd ~/nanoarianna/organism && make all` returns clean linker line for both binaries; `./janus --top-k 40 --rep-pen 1.3 -p test 2>&1 | head -1` shows graceful gguf-not-found rather than unrecognized-flag error. **Build path verified at commit `223f4ec`; binaries are gitignored so disk artifacts not retained — re-verified at item 4b on the pod.**
+4b. **organism/* argv patches re-verified on pod (x86_64-Ubuntu, different toolchain — gcc/clang vs Termux clang, different libc, AVX-512 SIMD path may differ).** First action after pod toolchain build: rebuild + re-test:
+   ```bash
+   cd ~/work/nanoarianna/organism && make all
+   ./janus --top-k 40 --rep-pen 1.3 -p test 2>&1 | head -1     # expect: gguf-not-found
+   ./resonance --top-p 0.95 --rep-pen 1.3 -p test 2>&1 | head -1   # expect: bin-not-found
+   ```
+   If either binary returns "unknown argument" or fails to build, halt the pod plan and report — Termux→x86_64 portability bug to fix before SFT spends pod hours.
 5. **RunPod token verified:** `curl -s -H "Authorization: Bearer $RUNPOD_API_KEY" https://api.runpod.io/graphql -d '{"query":"query{myself{id}}"}'` returns 200.
 6. **Watchdog cron drafted on phone-2** at `~/nanoarianna/runpod/budget_watchdog.sh` (TODO file — to be written at pod-launch step). Polls RunPod GraphQL `runtimeMinutes`, multiplies by pod hourly rate, kills pod if cost > $18.
 
@@ -153,7 +160,7 @@ python3 janus_to_gguf.py ~/work/data/janus_v4_sft_leo.bin \
 **Per-format MAE gate (audit B3 corrected — only formats `notorch/gguf.c` decodes):**
 - Q8_0 round-trip MAE < 1e-4 vs fp32 (sanity, structurally true).
 - Q4_K logits-KL < 0.05 on 256-token forward pass against fp32 baseline.
-- **Fallback if Q4_K fails gate:** `Q5_0` or `Q6_K` (both supported by `notorch/gguf.c:354`'s dequant). NOT Q5_K_M (audit B.3 — that format is not in `gguf.c`'s switch).
+- **Fallback if Q4_K fails gate:** `Q5_0` or `Q6_K` (both supported by `notorch/gguf.c:303-336` `gguf_dequant` switch — Q5_0 case at `:324`, Q6_K case at `:333`). NOT Q5_K_M (audit B.3 — no Q5_K_M case anywhere in `gguf.c`).
 
 ---
 
@@ -377,7 +384,11 @@ hf upload ataeff/nanoarianna ~/work/dist/ . \
 
 ## Open decisions (lock at execution time)
 
-1. **RRPRAM training contingency (audit H1):** RRPRAM low-rank backward through notorch tape is grad-check-verified (`tests/test_rrpram_lr` PASS), but full SFT loop (200M params, 1500 steps, 40 epochs) is unproven scale. **Plan:** smoke-train at 50 steps before committing the full 1500. If 50-step smoke produces increasing loss / NaN / unbounded gradient norm, halt + report (multi-day notorch-op debug); don't burn pod hours on broken training. Pre-flight item 4 + smoke-50 = early kill criterion.
+1. **RRPRAM training contingency (audit H1):** RRPRAM low-rank backward through notorch tape is grad-check-verified (`tests/test_rrpram_lr` PASS), but full SFT loop (200M params, 1500 steps, 40 epochs) is unproven scale. **Plan:** smoke-train at 50 steps before committing the full 1500. **Concrete kill criteria (audit F.11 — replace v2's hand-wavy "increasing loss / unbounded gradient"):**
+   - **Loss-rising kill:** `loss[step=50] > loss[step=10]` (40-step window catches divergence; tolerates the 5–15 step early-spike-then-settle that healthy SFT often shows).
+   - **NaN kill:** any single NaN/Inf in loss or gradient triggers immediate halt.
+   - **Gradient-norm kill:** `||g||₂_step50 > 100 × ||g||₂_step1` (Karpathy heuristic for genuine divergence; Chuck's adaptive moments routinely handle 2–5× spikes), OR absolute `||g||₂ > 1e3` regardless of ratio.
+   On any kill: snapshot the run state to `runs/sft_arianna_smoke_failed/`, push to HF for audit, abort pod plan (don't proceed to 1500-step run). Multi-day notorch-op debug rather than burn pod hours on broken training.
 2. **SFT step count.** Default 1500 with the tightened early-stop (every-100 plateau detection, audit B.5). May lock at 600-900 if val plateau hits early; may extend to 2000 if val keeps falling at 1500.
 3. **Q8_0 vs Q4_K default ship.** Q8_0 ~200 MB, fidelity high. Q4_K ~120 MB, MAE-gated (KL < 0.05 vs fp32, fallback Q5_0/Q6_K, NOT Q5_K_M). Default ship Q8_0 both; Q4_K as fallback.
 4. **Per-voice optimal sampling lock.** Per Dario paper Result 7: Leo expected at top_k=∞ / temp 0.9–1.0; Arianna expected at top_p=0.95 / temp 0.7–0.9. Real values from sweep, not assumption.
@@ -396,12 +407,32 @@ hf upload ataeff/nanoarianna ~/work/dist/ . \
 
 ---
 
+## "Save everything" checklist (per Oleg's reminder 2026-05-09)
+
+Phase 4 produces five artifact classes. Each has an explicit save destination — **no "we'll figure it out at the end"**:
+
+| artifact | when produced | save destination | why |
+|---|---|---|---|
+| `sft_resonance_arianna.c` source | post-write, pre-SFT | committed to nanoarianna `runpod/` on phone-2 via `git push` from pod (or pod-mirrored `runpod/` to phone-2 over Tailscale) | reproducibility — the trainer is the artifact |
+| `resonance_200m_sft_arianna.bin` raw fp32 RS02 | post-SFT, pre-quantization | **immediately uploaded to HF `ataeff/nanoarianna/sft_v2/`** (audit D.2) | protects 30+ min of SFT compute from any later watchdog kill |
+| Janus Leo + Resonance Arianna GGUFs (Q8_0 + Q4_K) | post-quantization, pre-sweep | mirrored to pod-local `~/work/dist/` AND ready for HF upload after sweep locks | so sweep harness has them locally |
+| Sweep TSVs + transcripts + locked.toml | streaming during sweep, finalized post-sweep | pod-local `~/work/results/<date>/` AND uploaded as `ataeff/nanoarianna/sweep/<date>/` after lock | full reproducibility archive |
+| `manifest.toml` + `init_*.aml` (locked) + run report | post-lock | uploaded to `ataeff/nanoarianna/` root + run report committed to umbrella `phones/results/galaxy-a07/` | the slot manifest is the contract phone-2 reads to know which weights to pull |
+
+**Quantization happens on the same pod** (Oleg's reminder 2026-05-09 "квантизируй там же"). No phone-2 conversion attempts — Resonance fp32 → GGUF is a Python+torch pipeline that needs RAM and CPU phone-2 cannot offer cleanly. Pod does it once; phone-2 only ever sees GGUFs via curl from HF (per "Verification path back to phone-2" §1).
+
+If pod is killed at any phase boundary, the previous-phase artifact is on HF. Phase 5 onward can resume from there.
+
+---
+
 ## Notes for Oleg
 
 - v3 closes all 5 v2 audit blockers (A.1+A.2 RESOLVED in code, B.1 dims fixed, B.2 framing corrected against verified RRPRAM tape support, D.1 RS02 spec inline). 9 FIX/NIT items also addressed (B.3 Q5_K_M removed, B.4 epoch estimate, B.5 early-stop tightened, B.6 tokenizer-compression pre-flight, B.7 HF auth, D.2 persist SFT to HF, F.1 Mac Neo handoff path, F.2 manifest.toml schema, H.1 RRPRAM contingency).
-- Pre-flight item 4 (organism/* argv patches build clean) **already verified this commit** — no longer a TODO.
-- Pod budget $10–18 hard-killed at $18; SFT smoke-50 step protects against burning hours on broken RRPRAM training.
-- v3 is a substantial rewrite vs v2 (~150 lines of edits + organism patches). One more Opus pass optional — your call.
+- **v3 final-pass spec polish (audit pass 3, post-launch-of-this-edit):** F7+F8 op-names corrected (`nt_seq_linear_t / nt_rope_freq / nt_swiglu` — `notorch.h` actuals); F9 `gguf.c` line ref corrected to `:303-336`; F10+F13 pre-flight 4b on-pod rebuild verification step added; F11 concrete numeric kill thresholds for SFT smoke-50 (loss[50]>loss[10] / any NaN / `||g||₂_50 > 100·||g||₂_1` or `> 1e3`).
+- "Save everything" checklist added per Oleg's reminder — five artifact classes with explicit destinations (nanoarianna repo via push / HF `sft_v2/` post-SFT / HF `slot_*/` post-quant / HF `sweep/<date>/` post-lock / umbrella `phones/results/galaxy-a07/` for run report). Quantization on same pod confirmed.
+- Pre-flight item 4 (organism/* argv patches build clean) **already verified phone-2 commit `223f4ec`** — pre-flight 4b re-verifies on pod x86_64 toolchain.
+- Pod budget $10–18 hard-killed at $18; SFT smoke-50 step + concrete kill criteria protect against burning hours on broken RRPRAM training.
+- v3 final = this edit. After this commit, brief is launch-ready.
 
 ---
 
