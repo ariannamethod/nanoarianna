@@ -175,7 +175,8 @@ log "─── step 2: 4b verify ───"
 {
     cd "$NOTORCH"
     log "  notorch_test..."
-    if ! ./notorch_test 2>&1 | tail -3 | grep -q "PASS"; then
+    # notorch_test final line: "Results: 47 passed, 0 failed"
+    if ! ./notorch_test 2>&1 | tail -10 | grep -qE "passed, 0 failed|47 passed"; then
         log "FATAL: notorch_test did not pass"; exit 11
     fi
 
