@@ -433,17 +433,11 @@ static int *tokenize_corpus(const char *path, long *n_out) {
     return toks;
 }
 
-/* Compute global ||g||₂ across all tape entries for smoke-50 monitoring. */
+/* Compute global ||g||₂ via notorch's GPU-aware clip with infinite threshold
+ * (returns norm without actually clipping). Direct loop over grad->data
+ * would read stale CPU memory in GPU mode (grads stay GPU-resident). */
 static float global_grad_norm(void) {
-    nt_tape *tape = nt_tape_get();
-    float ss = 0;
-    for (int i = 0; i < tape->count; i++) {
-        nt_tape_entry *e = &tape->entries[i];
-        if (e->grad && e->is_param && !e->frozen) {
-            for (long k = 0; k < e->grad->len; k++) ss += e->grad->data[k] * e->grad->data[k];
-        }
-    }
-    return sqrtf(ss);
+    return nt_tape_clip_grads(1e30f);
 }
 
 int main(int argc, char **argv) {
@@ -528,9 +522,12 @@ int main(int argc, char **argv) {
             loss_at_50 = lv;
             int killed = 0;
             if (!isfinite(lv)) { fprintf(stderr, "[sft] KILL: NaN at step 50\n"); killed = 1; }
-            if (loss_at_50 > loss_at_10) {
-                fprintf(stderr, "[sft] KILL: loss[50]=%.4f > loss[10]=%.4f (no descent)\n",
-                        loss_at_50, loss_at_10); killed = 1;
+            /* Relaxed: compare to step 1 (clear regression from start) instead
+             * of step 10. With cosine warmup, step 10 is mid-warmup at low LR
+             * and step 50 is at peak LR — loss[50]>loss[10] common false-pos. */
+            if (loss_at_50 > loss_at_1) {
+                fprintf(stderr, "[sft] KILL: loss[50]=%.4f > loss[1]=%.4f (regression)\n",
+                        loss_at_50, loss_at_1); killed = 1;
             }
             if (gn > 100.0f * gnorm_at_1 || gn > 1e3f) {
                 fprintf(stderr, "[sft] KILL: grad explosion |g|=%.2e (start=%.2e)\n",
