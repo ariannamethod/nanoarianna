@@ -90,7 +90,7 @@ run_cell() {
 echo "[sweep] J-L grid begin: $(date +%FT%T)"
 for prompt_id in technical philosophical personal; do
   prompt_file="$PROMPTS_DIR/${prompt_id}.txt"
-  for t in 0.3 0.5 0.7 0.8 0.9 1.0; do
+  for t in 0.5 0.7 0.8 0.9 1.0 1.1; do
     for k in 40 100 256; do
       for rp in 1.0 1.3 1.4; do
         cell="$RESULTS_DIR/j-l/transcripts/t${t}_k${k}_rp${rp}_${prompt_id}.txt"
@@ -111,7 +111,7 @@ echo "[sweep] J-L grid done: $(date +%FT%T)"
 echo "[sweep] R-A grid begin: $(date +%FT%T)"
 for prompt_id in technical philosophical personal; do
   prompt_file="$PROMPTS_DIR/${prompt_id}.txt"
-  for t in 0.3 0.5 0.7 0.8 0.9 1.0; do
+  for t in 0.5 0.7 0.8 0.9 1.0 1.1; do
     for p in 0.85 0.95 1.0; do
       for rp in 1.0 1.3 1.4; do
         cell="$RESULTS_DIR/r-a/transcripts/t${t}_p${p}_rp${rp}_${prompt_id}.txt"
