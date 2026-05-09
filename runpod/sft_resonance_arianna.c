@@ -495,6 +495,7 @@ int main(int argc, char **argv) {
     float val_history[64] = {0};
     int   val_count = 0;
     int   plateau_streak = 0;
+    float best_val = 99.0f;
     int   smoke_passed = (steps < 50 ? 1 : 0);   /* skip smoke check only when run too short to reach step 49; at steps=50 the kill checks DO fire */
 
     for (int step = 0; step < steps; step++) {
@@ -568,6 +569,13 @@ int main(int argc, char **argv) {
                 fprintf(stderr, " (Δ %.4f)", delta);
                 if (delta < PLATEAU_EPS) plateau_streak++;
                 else plateau_streak = 0;
+            }
+            if (val < best_val) {
+                best_val = val;
+                char best_path[512];
+                snprintf(best_path, sizeof(best_path), "%s_best.bin", out_prefix);
+                write_rs02(best_path, &M);
+                fprintf(stderr, " ★ best");
             }
             fprintf(stderr, "\n");
             if (val_count < 64) val_history[val_count++] = val;

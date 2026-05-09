@@ -258,7 +258,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("output")
-    ap.add_argument("--quant", choices=["q8_0", "q4_k"], default="q8_0")
+    ap.add_argument("--quant", type=str.lower, choices=["q8_0", "q4_k"], default="q8_0")
     args = ap.parse_args()
 
     cfg, merges, weights = read_rs02(args.input)

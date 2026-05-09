@@ -227,8 +227,16 @@ if ! "$NANOREPO/runpod/sft_resonance_arianna" \
     exit $rc
 fi
 SFT_FINAL="${SFT_PREFIX}_final.bin"
+SFT_BEST="${SFT_PREFIX}_best.bin"
 [ -f "$SFT_FINAL" ] || { log "FATAL: SFT final missing"; exit 12; }
-log "step 4 OK — SFT artifact: $SFT_FINAL"
+# Prefer best-val artifact if trainer wrote one (lower val = better fit)
+if [ -f "$SFT_BEST" ]; then
+    SFT_USE="$SFT_BEST"
+    log "step 4 OK — SFT artifact: $SFT_BEST (best-val, preferred over final)"
+else
+    SFT_USE="$SFT_FINAL"
+    log "step 4 OK — SFT artifact: $SFT_FINAL (no best-val, using final)"
+fi
 
 # ─── 5. Quantize ──────────────────────────────────────────────────────────
 log "─── step 5: quantize ───"
@@ -236,13 +244,13 @@ log "─── step 5: quantize ───"
     log "  Resonance Arianna SFT → GGUF Q8_0..."
     mkdir -p "$OUT/slot_arianna"
     python3 "$NANOREPO/runpod/resonance_to_gguf.py" \
-        "$SFT_FINAL" \
+        "$SFT_USE" \
         "$OUT/slot_arianna/resonance_v2_arianna_q8_0.gguf" \
         --quant Q8_0 2>&1 | tail -5
 
     log "  Resonance Arianna SFT → GGUF Q4_K..."
     python3 "$NANOREPO/runpod/resonance_to_gguf.py" \
-        "$SFT_FINAL" \
+        "$SFT_USE" \
         "$OUT/slot_arianna/resonance_v2_arianna_q4_k.gguf" \
         --quant Q4_K 2>&1 | tail -5
 
@@ -301,7 +309,7 @@ else
     huggingface-cli login --token "$HF_TOKEN" >/dev/null 2>&1
 
     log "  uploading SFT raw .bin..."
-    huggingface-cli upload "$HF_REPO" "$SFT_FINAL" \
+    huggingface-cli upload "$HF_REPO" "$SFT_USE" \
         "sft_v2/resonance_arianna_v2_sft.bin" --repo-type model 2>&1 | tail -3
 
     log "  uploading slot_arianna GGUFs..."
