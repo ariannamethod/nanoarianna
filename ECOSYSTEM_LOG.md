@@ -4,6 +4,75 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 4 brief v3 (post-second-Opus-audit + organism argv patches landed)
+
+After v2 landed, ran second Opus pass (per Oleg "ещё раз прогнать
+опуса"). 28 findings; 5 BLOCKERs:
+
+- **A.1+A.2:** sweep harness invoked `--top-k`/`--rep-pen` flags that
+  neither yent.aml/resonance.aml argv parsers recognize; rep_penalty
+  hardcoded `1.4f` in both samplers. As written, 324 sweep cells would
+  be 324 statistically-identical samples of one point.
+- **B.1:** every Resonance dimension in v2 §6-point §1 was wrong vs
+  actual `huggingface.co/ataeff/resonance/model.py:222-231`
+  RESONANCE_200M (n_embd 640→768, n_head 8→12, head_dim 80→64,
+  hidden 1792→2048, ctx 1024→2048, vocab 16128→16384, R 2048→48).
+- **B.2:** v2 framed RRPRAM-training-mode through notorch tape as
+  unverified multi-day lift. Verified: `nt_rrpram_lowrank_attention`
+  defined `notorch.c:3232`; backward path persisted via tape
+  `notorch.c:3258-3259`; `tests/test_rrpram_lr` PASS on aarch64-Termux
+  per phone-2 Phase 1 (`max_rel_diff 6.06e-02, fails 0`). Audit
+  over-stated; lift bounded.
+- **D.1:** RS02 input/output format unspecified. v3 spec inline
+  (magic, header, merges, per-block tensor order via
+  `resonance_forward.h:94-114`).
+
+Plus 9 FIX/NIT items (Q5_K_M not in `notorch/gguf.c`,
+ClimbMix-BPE-on-Arianna tokenizer-compression risk, early-stop
+firing at end-of-run, manifest.toml schema, Mac Neo handoff path,
+persist-SFT-to-HF before sweep, HF Bearer auth on public repo,
+budget contingency for unverified RRPRAM training scale).
+
+**v3 patches landed in this same commit:**
+
+- `organism/janus.aml`: `g_yent_top_k`, `g_yent_rep_pen` globals +
+  `--top-k` / `--rep-pen` argv flags. Hardcoded `rep_penalty = 1.4f`
+  + `YENT_TOPK_CAP=256` in `yent_sample_token` now read from globals.
+- `organism/tools/resonance_forward.h` (now vendored locally — 16 KB
+  copy of upstream, controls our sampler): `g_resonance_rep_pen`
+  global + read in `resonance_sample_token`.
+- `organism/resonance.aml`: BLOOD LINK switched from upstream
+  `~/resonance.aml` to nanoarianna's own `~/nanoarianna/organism`
+  for include path. New `--rep-pen` argv flag.
+
+**Build verification on phone-2 aarch64-Termux this commit:**
+
+```
+make all
+amlc: linking libnotorch libaml openblas
+amlc: success → ./janus       (536,320 bytes)
+amlc: success → ./resonance   (250,592 bytes)
+./janus --top-k 40 --rep-pen 1.3 -p test       → graceful gguf-not-found (flags accepted)
+./resonance --rep-pen 1.0 -p test              → graceful bin-not-found (flag accepted)
+```
+
+Pre-flight item 4 (organism argv patches build clean) now
+**verified this commit** — was TODO in v2.
+
+**v3 brief outputs:** same shape as v2 (slot_arianna/, slot_leo/,
+sweep archive, manifest.toml, LICENSE-WEIGHTS) plus
+`sft_v2/resonance_200m_sft_arianna.bin` raw fp32 RS02 — persisted to
+HF immediately after SFT completes, before sweep starts (audit D.2 —
+protects against watchdog kill mid-sweep).
+
+**Pod budget $10–18 retained.** RRPRAM SFT 50-step smoke before
+committing 1500 steps — early-kill criterion against unverified
+training scale (audit H.1).
+
+One more Opus pass optional; Oleg's call.
+
+---
+
 ## 2026-05-09 — Phase 4 brief v2 (post-audit + post-pivot, weights J1 inventory verified)
 
 After v1 of the brief landed, ran an Opus subagent code audit per Oleg's

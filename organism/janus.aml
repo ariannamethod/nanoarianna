@@ -49,6 +49,14 @@ BLOOD COMPILE yent_sample {
  */
 #define YENT_TOPK_CAP 256
 
+/* nanoarianna globals — exposed via BLOOD MAIN argv so the Phase 4 RunPod
+ * sweep can grid these axes. Defaults match the upstream hardcoded values
+ * (rep_pen=1.4, top_k=YENT_TOPK_CAP=256) so behavior on phone-2 without
+ * flags is unchanged from the original yent.aml. Setting g_yent_top_k=0 or
+ * < 0 means "use full YENT_TOPK_CAP" (effective ∞ in our cap regime). */
+static float g_yent_rep_pen = 1.4f;
+static int   g_yent_top_k   = YENT_TOPK_CAP;
+
 typedef struct { float p; int idx; } _ProbIdx;
 
 static int _cmp_probidx_desc(const void *a, const void *b) {
@@ -58,10 +66,11 @@ static int _cmp_probidx_desc(const void *a, const void *b) {
 
 static int yent_sample_token(float *logits, int *ctx, int len,
                              float temp, float top_p) {
-    /* Repetition penalty over the last 64 positions (1.4× stronger than
-     * dario's default 1.3 / 32, since the field overlay can re-amplify
-     * recently-seen tokens). */
-    float rep_penalty = 1.4f;
+    /* Repetition penalty over the last 64 positions. Default 1.4 (1.4×
+     * stronger than dario's 1.3 / 32, since the field overlay can re-amplify
+     * recently-seen tokens). nanoarianna patch: read from g_yent_rep_pen
+     * so Phase 4 sweep can grid this axis via --rep-pen. */
+    float rep_penalty = g_yent_rep_pen;
     int window = 64;
     int start = len > window ? len - window : 0;
     for (int j = start; j < len; j++) {
@@ -130,6 +139,13 @@ static int yent_sample_token(float *logits, int *ctx, int len,
     }
     if (topk_filled < YENT_TOPK_CAP)
         qsort(topk, topk_filled, sizeof(_ProbIdx), _cmp_probidx_desc);
+
+    /* nanoarianna patch: optionally truncate to g_yent_top_k before top-p
+     * nucleus. g_yent_top_k <= 0 or > YENT_TOPK_CAP means "use full cap"
+     * (the effective-∞ regime that pairs with top_p=1.0 for high-entropy
+     * sweep cells). */
+    if (g_yent_top_k > 0 && g_yent_top_k < topk_filled)
+        topk_filled = g_yent_top_k;
 
     /* Nucleus: smallest prefix whose cumulative ≥ top_p */
     float cum = 0;
@@ -330,6 +346,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) max_tokens = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-t") && i + 1 < argc) temp       = atof(argv[++i]);
         else if (!strcmp(argv[i], "--top-p") && i + 1 < argc) top_p = atof(argv[++i]);
+        /* nanoarianna patch — Phase 4 sweep grid axes */
+        else if (!strcmp(argv[i], "--top-k") && i + 1 < argc) g_yent_top_k = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--rep-pen") && i + 1 < argc) g_yent_rep_pen = (float)atof(argv[++i]);
     }
 
     srand((unsigned)time(NULL));

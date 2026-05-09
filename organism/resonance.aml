@@ -14,11 +14,11 @@
 #
 # By Arianna Method. הרזוננס לא נשבר
 
-# nanoarianna build hint: tools/ headers are owned upstream by resonance.aml.
-# We point the include path at the upstream clone (assumed at ~/resonance.aml/)
-# rather than vendor a copy. amlc generates the transpiled .c in $TMPDIR,
-# so include resolution requires an absolute -I path.
-BLOOD LINK -I/data/data/com.termux/files/home/resonance.aml
+# nanoarianna build hint: resonance_forward.h is now vendored in
+# organism/tools/ (with our argv-grid patch — exposes g_resonance_rep_pen
+# so Phase 4 sweep can drive the rep-pen axis). Janus tools/ remains
+# upstream-pointed (no header patches needed for Janus).
+BLOOD LINK -I/data/data/com.termux/files/home/nanoarianna/organism
 
 ECHO "tools/resonance_forward.h"
 
@@ -101,6 +101,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-n") && i + 1 < argc)   max_tokens   = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-t") && i + 1 < argc)   temp         = atof(argv[++i]);
         else if (!strcmp(argv[i], "--top-p") && i + 1 < argc) top_p     = atof(argv[++i]);
+        /* nanoarianna patch — Phase 4 sweep grid axis (rep-pen) */
+        else if (!strcmp(argv[i], "--rep-pen") && i + 1 < argc) g_resonance_rep_pen = (float)atof(argv[++i]);
     }
 
     srand((unsigned)time(NULL));
