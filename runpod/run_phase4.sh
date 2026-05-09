@@ -128,12 +128,20 @@ log "─── step 1: toolchain build ───"
     if ! make -j8 2>&1 | tail -5; then
         log "FATAL: notorch build failed"; exit 10
     fi
+    log "  notorch install → /usr/local..."
+    if ! make install PREFIX=/usr/local 2>&1 | tail -3; then
+        log "FATAL: notorch install failed"; exit 10
+    fi
 
     cd "$AML"
     log "  ariannamethod make..."
     make clean >/dev/null 2>&1 || true
     if ! make -j8 2>&1 | tail -5; then
         log "FATAL: ariannamethod build failed"; exit 10
+    fi
+    log "  ariannamethod install → /usr/local..."
+    if ! make install PREFIX=/usr/local 2>&1 | tail -3; then
+        log "FATAL: ariannamethod install failed"; exit 10
     fi
 
     log "  janus organism build..."
@@ -149,9 +157,12 @@ log "─── step 1: toolchain build ───"
 
     log "  SFT trainer build..."
     cd "$NANOREPO/runpod"
+    # After install, libnotorch.a + libariannamethod.a are in /usr/local/lib,
+    # headers in /usr/local/include/ariannamethod/. Link against system paths.
     if ! cc -O3 -Wall -DUSE_BLAS sft_resonance_arianna.c \
-            -L"$NOTORCH" -lnotorch \
-            -L"$AML" -lariannamethod \
+            -I/usr/local/include \
+            -L/usr/local/lib \
+            -lnotorch -laml \
             -lopenblas -lm -lpthread \
             -o sft_resonance_arianna 2>&1 | tail -10; then
         log "FATAL: SFT trainer build failed"; exit 10

@@ -17,6 +17,10 @@
 # AML_PREFIX is the Termux fix: amlc defaults to /opt/homebrew (Mac), so we
 # must point it at $PREFIX explicitly.
 
+# PREFIX defaults: Termux exports its own (/data/data/com.termux/files/usr).
+# Linux/Ubuntu (RunPod, polygon) — fall back to /usr/local.
+PREFIX ?= /usr/local
+
 AML_PREFIX ?= $(PREFIX)
 export AML_PREFIX
 
@@ -41,7 +45,7 @@ check-deps:
 	@test -x $(AMLC)                 || (echo "amlc not found at $(AMLC)" && exit 1)
 	@test -f $(PREFIX)/lib/libaml.a    || (echo "libaml.a missing — install ariannamethod.ai system-wide" && exit 1)
 	@test -f $(PREFIX)/lib/libnotorch.a|| (echo "libnotorch.a missing — install notorch system-wide" && exit 1)
-	@test -f $(PREFIX)/lib/libopenblas.so || (echo "libopenblas missing — pkg install libopenblas" && exit 1)
+	@test -f $(PREFIX)/lib/libopenblas.so || test -f /usr/lib/x86_64-linux-gnu/libopenblas.so || (echo "libopenblas missing — pkg install libopenblas" && exit 1)
 	@echo "[check-deps] OK"
 
 clean:
