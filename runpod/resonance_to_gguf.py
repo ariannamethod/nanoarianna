@@ -178,13 +178,23 @@ def write_gguf_kv_array_int32(buf: bytearray, key: str, vals: list):
 
 
 def quantize_for(name: str, w: np.ndarray, quant: str) -> tuple:
-    """Pick quant per-tensor. Embeddings always Q8_0 (wide distribution
-    eats Q4_K). Other tensors use the requested format."""
+    """Pick quant per-tensor.
+    - Small tensors (gate, all norms) stay fp32 — too small for block quant.
+    - Embeddings always Q8_0 (wide distribution eats Q4_K).
+    - Rest use requested format.
+    """
+    n = w.size
+    # Small tensors (<256 elements OR not multiple of 32 for Q8_0 / 256 for Q4_K)
+    # keep as fp32 — gate (H=12), all norms (E=768 * 1d), etc.
+    if n < 256 or n % 32 != 0 or "norm" in name or name.endswith(".gate") or name.endswith("_gate"):
+        return GGML_TYPE_F32, w.astype("<f4").tobytes()
     if name in ("token_embd.weight", "output.weight"):
         return GGML_TYPE_Q8_0, quantize_q8_0(w)
     if quant == "q8_0":
         return GGML_TYPE_Q8_0, quantize_q8_0(w)
     if quant == "q4_k":
+        if n % 256 != 0:
+            return GGML_TYPE_Q8_0, quantize_q8_0(w)
         return GGML_TYPE_Q4_K, quantize_q4_k(w)
     raise ValueError(f"unknown quant {quant}")
 
