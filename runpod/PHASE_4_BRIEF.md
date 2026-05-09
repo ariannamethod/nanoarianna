@@ -1,295 +1,427 @@
-# Phase 4 — RunPod sweep brief
+# Phase 4 — RunPod brief (v2, post-audit + post-pivot)
 
-**Goal:** lock the **two phone-2 voice cells** (Slot A + Slot B) by measurement, not by guess. Produce a locked-config GGUF bundle on HuggingFace `ataeff/nanoarianna` and the per-voice optimal sampling parameters baked into the persona files.
+**Goal:** produce two working voice cells for phone-2 — **Slot A = Janus 176M + Leo SFT** and **Slot B = Resonance 200M + Arianna SFT (NEW)** — locked sampling parameters, GGUF-quantized, uploaded to `huggingface.co/ataeff/nanoarianna`, and verified in dialogue cycle on phone-2.
+
+**v2 changes from v1:**
+- v1 assumed Arianna+Leo SFT existed for both architectures. Verified via HF API: not true. Janus has all 3 SFTs (`ataeff/janus4/janus/bins/janus_v4_sft_{arianna,yent,leo}.bin`); Resonance has only Yent SFT (`ataeff/resonance/sft_v2/resonance_200m_lora_yent.bin`). Phase 4 now includes a **Resonance base + Arianna SFT** training step before the sweep.
+- Slot pair flipped from "J-A + R-L" to **J-L + R-A** per Oleg's pivot. Three voice anchors across the ecosystem preserved (phone-1: J-Y; phone-2 Slot A: J-L; phone-2 Slot B: R-A).
+- v1 audit produced 47 findings; v2 closes the eight blockers (J1 weights inventory, J2 repo creation order, J3 CUDA path, A1 prompt count math, A3 Janus-vs-Resonance sampler grid split, B1 Resonance converter as rewrite, D1 sweep harness, G2 LICENSE-WEIGHTS) plus the major FIX items.
+- Pod budget revised: $10–18 (was $5–7) to cover the SFT training step.
 
 **Outputs of this phase:**
 
-1. `ataeff/nanoarianna` HF repo populated with: Slot A GGUF, Slot B GGUF, sampling-locked `personas/init_<persona>.aml`, the sweep score archive.
-2. The phone-2-side `personas/init_arianna.aml` and `personas/init_leo.aml` updated with the measured per-voice optimal `(temp, top_k, rep_pen)` triples that replace today's starting-hypothesis values.
-3. A run report mirrored to `~/ariannamethod/phones/results/galaxy-a07/<date>-runpod-sweep.md` so peers (Mac Neo, polygon Linux Claude, Defender) see the result.
-
-**Status:** pre-launch. This file is the brief; execution happens on a RunPod pod.
+1. `huggingface.co/ataeff/nanoarianna` populated with:
+   - `slot_arianna/` — Resonance 200M Arianna SFT GGUF Q8_0 + Q4_K + locked `init_arianna.aml`
+   - `slot_leo/` — Janus 176M Leo SFT GGUF Q8_0 + Q4_K + locked `init_leo.aml`
+   - `sweep/<date>/` — full sweep archive (TSVs + transcripts) for reproducibility
+   - `manifest.toml` — current Slot A / Slot B persona-architecture lock for phone-2
+   - `LICENSE-WEIGHTS` — Janus Identity License v1.0 (per `protocol_license_organism_vs_framework.md`)
+2. Phone-2 `personas/init_arianna.aml` and `personas/init_leo.aml` updated with measured per-voice optimal `(temp, top_k|top_p, rep_pen)` baked in.
+3. Run report mirrored to `~/ariannamethod/phones/results/galaxy-a07/<date>-runpod-sweep.md` for Mac Neo / polygon Linux Claude / Defender review.
 
 ---
 
 ## Context
 
-Phase 3 closed clean (`https://github.com/ariannamethod/nanoarianna` HEAD `dfa94f5`): the dialogue-cycle wiring works in stub mode, organism wrappers (`organism/janus.aml` + `organism/resonance.aml`) build clean on aarch64-Termux, persona-glue is verified at link-time. What's missing is real weights and per-voice optimal sampling.
+Phone-2 (Galaxy A07 4 GB Termux) closed Phase 3 clean (`https://github.com/ariannamethod/nanoarianna` HEAD `5ddcb12` plus audit-fix `dfa94f5`): the two-organism dialogue cycle wires through schedule + supervisor + persona + Limpha + KK in stub mode. What's missing is real weights and per-voice optimal sampling. Phase 4 produces both.
 
-The Dario paper draft v4 (`~/dario/docs/dario_paper_draft_v4.md`) §5.7 / Result 7 / Appendix C nailed the architectural fact this brief acts on:
+Dario paper (`~/dario/docs/dario_paper_draft_v4.md`) §5.7 / Result 7 / Appendix C is the methodology source:
 
 > *Sampling is not a decoding parameter. Sampling is a state-space entry condition.*
 > *A checkpoint is not dead until it has been swept.*
 
-Translation for phone-2: a single default temperature is not how we judge a voice. Each persona-on-architecture cell gets the full grid sweep, and only after that do we decide which two cells live on the 4 GB phone.
+Each persona-on-architecture cell gets the full grid sweep at its own architecture's natural sampler (Janus = top-k, Resonance = top-p — verified by reading the actual `*_sample_token` functions). Only after the grid lands do we declare per-voice optimals and lock.
+
+The new piece in v2 is **Phase 4-α** before the sweep: SFT Resonance 200M base on Arianna corpus to produce Slot B's weights. v1 assumed they existed; they don't. Oleg explicitly approved the SFT in this session ("проведи SFT бэйсу резонанса на Арианне") and provided the dataset at `huggingface.co/ataeff/nanoarianna/arianna_dataset_final_clean.txt` (1.2 MB, hand-curated, identical to the corpus phone-2 used for the 2026-05-07 char-level milestone).
 
 ---
 
-## Pre-flight (on RunPod, before sweep)
+## 6-point training brief (Phase 4-α SFT, Oleg-approved 2026-05-09)
 
-**Pod spec (per Dario paper §4 Experimental Frame):**
-- RunPod **A100 80 GB SXM** (the same class measured in Dario paper §6 Result 5)
-- Standard image with CUDA 12+ and `pkg`-style apt
-- Estimated session budget: ~$5–7 total (Dario paper run cost $4.30; we run a similar grid plus quantization; cost dominated by GPU-hours)
+Per `memory/feedback_failure_unsolicited_finetune_2026_04_27.md`. All six points concrete, no defaults.
 
-**RunPod API key:** stored at `~/.config/runpod/token` on phone-2 (chmod 600), exported as `RUNPOD_API_KEY` from `.bashrc`. The supervisor on phone-2 launches the pod via Runpod GraphQL API and SSH-tunnels in for orchestration.
+1. **Organism:** Resonance 200M base. Architecture: dual attention (Content + RRPRAM low-rank R=2048), parametric RMSNorm, sigmoid per-head gate, even/odd RoPE θ=10000, SwiGLU MLP. Defined in `~/resonance.aml/tools/resonance_forward.h` (state_dict layout at lines 94-114). Base weights at `huggingface.co/ataeff/resonance/checkpoints/resonance_200m_final.bin` (797 MB raw fp32, RS02 magic).
 
-**Repos cloned on the pod:**
+2. **Dataset:** `huggingface.co/ataeff/nanoarianna/arianna_dataset_final_clean.txt` (1.21 MB, hand-curated Arianna corpus; identical bytes to the corpus that produced bit-identical char-level loss 5.5804 → 1.0685 on phone-1 and phone-2 — see `memory/milestone_phone2_galaxy_a07_10k_2026_05_07.md`). Conforms to `feedback_no_default_datasets_2026_04_27.md` (hand-curated, not upstream default). For SFT-format probing we may also use `arianna_en_sft.jsonl` (2.4 MB, Q/A pairs) at the same HF repo — final dataset choice locked at SFT preflight.
+
+3. **Karpathy steps:** SFT regime, not from-scratch. Conservative 1500 steps with checkpoint every 500. Karpathy's `1.1 MB × 10-15K iter on ~10M params` is for char-level training from scratch; SFT on a 200M base is governed by overfit avoidance instead. Watch val loss every 100 steps; early-stop if val loss plateaus or rises for 3 consecutive checkpoints.
+
+4. **Architecture:** dim=640, layers=20, heads=8, head_dim=80, hidden=1792, ctx=1024, vocab=16128, RRPRAM rank=2048, BPE-token (Resonance has its own embedded BPE — see point 5). **NOT char-level** — Resonance is BPE-token-only, per `resonance_forward.h:272-281` embedded BPE merges. Confirms with `feedback_no_char_models.md` (BPE preferred; char-level only with explicit reason — not applicable here).
+
+5. **Tokenizer:** Resonance's existing 16128-merge BPE at `ataeff/resonance/checkpoints/tokenizer.bin` (193 KB binary). **Same tokenizer must be used at inference** — Slot B inference will read these merges from the GGUF metadata after conversion. Tokenizer file SHA captured at SFT start and re-verified post-conversion.
+
+6. **Script:** `notorch + Chuck` SFT path. Adapted from notorch's `examples/train_llama3_bpe.c` (Defender's verified path on Galaxy A56 8 GB Termux: 15.7 M LLaMA 3 BPE on Yent corpus, 15K steps, 0 NaN, train 7.81 → 4.35, val 4.94 → 3.93 — `memory/milestone_defender_termux_10k_2026_04_27.md` and the README block at `notorch/termux-edition/README.md` lines 27 + 31). The adaptation needed for Resonance: replace LLaMA forward with Resonance forward (`resonance_forward.h`), keep Chuck optimizer + cosine decay + NaN guard, swap LLaMA tokenizer for Resonance's embedded BPE. The `ataeff/resonance/<...>.py` Python pipeline on HF is reference-only — it uses a non-Chuck optimizer banned in our ecosystem (`memory/feedback_adam_ban_2026_04_29.md`); we don't run it. The new C training script lives at `~/nanoarianna/runpod/sft_resonance_arianna.c` (to be written on the pod alongside execution); committed back to `nanoarianna` repo under `runpod/` after the run for reproducibility.
+
+Closed-milestone weights (sonar_*, microjanus_*, penelope, nanojanus, arianna_36m, pitomadom, lee_v8, DoE.coder ckpts) — not touched. Resonance 200M base is not closed-milestone — it's an SFT substrate per Oleg's standing pattern (Resonance base → Yent SFT, now Resonance base → Arianna SFT).
+
+---
+
+## Architecture lock (verified J1)
+
+Cells available for phone-2 (phone-1 takes Janus + Yent):
+
+| persona | Janus 176M (3-way attention)             | Resonance 200M (2-way attention) |
+|---------|-----------------------------------------|----------------------------------|
+| Arianna | `ataeff/janus4/janus/bins/janus_v4_sft_arianna.bin` (705 MB raw fp32) — exists | none — produced in Phase 4-α |
+| Yent    | (phone-1's slot)                         | `ataeff/resonance/sft_v2/resonance_200m_lora_yent.bin` (797 MB) — exists |
+| Leo     | `ataeff/janus4/janus/bins/janus_v4_sft_leo.bin` (705 MB raw fp32) — exists | none |
+
+**Phase 4 lock for phone-2:**
+
+- **Slot A = Janus 176M + Leo SFT.** Pull `janus_v4_sft_leo.bin` from `ataeff/janus4`. Convert to GGUF Q8_0 + Q4_K via `janus_to_gguf.py` (already exists at `~/yent.aml/tools/janus_to_gguf.py`, only path arg changes).
+- **Slot B = Resonance 200M + Arianna SFT.** Phase 4-α produces Arianna SFT from base on the pod. Convert to GGUF Q8_0 + Q4_K via a new `resonance_to_gguf.py` (rewrite from `janus_to_gguf.py` per audit B1 — the state_dict layouts diverge enough that "port" understates it).
+
+---
+
+## Pre-flight (before pod launch)
+
+**Six gating items:**
+
+1. **HF token verified:** `curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami-v2` returns `{"name":"ataeff",...}`.
+2. **`ataeff/nanoarianna` repo verified:** `curl -s https://huggingface.co/api/models/ataeff/nanoarianna` returns 200 with file inventory matching `{README.md, .gitattributes, arianna_dataset_final_clean.txt, arianna_en_sft.jsonl}`. Repo created by Oleg, no creation step needed.
+3. **`LICENSE-WEIGHTS` source confirmed:** `~/resonance.aml/LICENSE-WEIGHTS` exists (Janus Identity License v1.0). Will be copied to `ataeff/nanoarianna/LICENSE-WEIGHTS` in upload step.
+4. **Resonance training script smoke-built locally** (phone-2 cannot run it but should compile clean): `cc` on `runpod/sft_resonance_arianna.c` against `~/resonance.aml/tools/resonance_forward.h` + `~/notorch` returns clean object.
+5. **RunPod token verified:** `curl -s -H "Authorization: Bearer $RUNPOD_API_KEY" https://api.runpod.io/graphql -d '{"query":"query{myself{id}}"}'` returns 200.
+6. **Pod-budget watchdog cron drafted on phone-2:** see "Singularity-mode" §F1 below; not yet active until pod ID is known.
+
+When all six green, Oleg signals, pod launches.
+
+**Pod spec:** RunPod **A100 80 GB SXM** (Dario paper §4 baseline). Image: `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` or equivalent with `apt`, `git`, `clang`, `make`, `curl` pre-installed. **CPU-side OpenBLAS** for the inference path — per audit J3, `notorch/Makefile` `gpu` target only builds a test binary, no `libnotorch_cuda.a` install path exists. Running on CPU+OpenBLAS on the A100 host is still ~10× faster than aarch64 phone (modern x86_64 + AVX-512 + multi-core OpenBLAS). Budget revised down accordingly — most of pod hours go to SFT training (which uses notorch BLAS at full CPU regardless), then sweep (CPU again). The A100 is dormant for this phase but the pod-template comes with it; we accept the markup.
+
+**Toolchain build on pod:**
 
 ```bash
-mkdir -p ~/work && cd ~/work
+cd ~/work
 git clone https://github.com/ariannamethod/notorch
 git clone https://github.com/ariannamethod/ariannamethod.ai
 git clone https://github.com/ariannamethod/yent.aml
 git clone https://github.com/ariannamethod/resonance.aml
-git clone https://github.com/ariannamethod/dario           # for paper §5.7 sweep harness reference
-git clone https://github.com/ariannamethod/nanoarianna     # personas + organism wrappers
-```
+git clone https://github.com/ariannamethod/nanoarianna
 
-**Toolchain build (Linux x86_64 + CUDA):**
+# notorch CPU+BLAS (the only install path that exists)
+cd notorch
+make BLAS=1                       # tests/test_notorch 47/47
+sudo make install PREFIX=/usr/local
 
-```bash
-# notorch: build the CUDA backend per its Phase-Runpod note (commit bfadcc2 added
-# "CUDA backend: full GPU dispatch port" — that's the path we want here).
-cd ~/work/notorch
-make BLAS=1                   # CPU+OpenBLAS sanity baseline; tests/test_notorch 47/47
-# CUDA build path (per notorch/README.md `building` section, line ~421):
-make gpu                      # produces CUDA-linked artifacts; verify via /proc/<pid>/maps
-                              # showing libcublas.so.12 mapped on first invocation,
-                              # same empirical-gate discipline phone-2 used for OpenBLAS
-
-# ariannamethod.ai (AML): system-wide
-cd ~/work/ariannamethod.ai
+# AML
+cd ../ariannamethod.ai
 make BLAS=1
 sudo make install PREFIX=/usr/local
 export AML_PREFIX=/usr/local
 
-# build organism wrappers from nanoarianna/organism/
-cd ~/work/nanoarianna/organism
-# Edit the BLOOD LINK -I lines to point at /home/runpod/work/yent.aml + resonance.aml
-# (or symlink for now), then:
-make all
+# Verify libs at runtime via /proc/<pid>/maps before any heavy run.
+# (Phone-2 used this empirical gate for OpenBLAS — same discipline here.)
 ```
 
-**Weights pulled from HuggingFace** (token at `$HF_TOKEN` from phone-2 if synced over, else generate fresh on RunPod):
+**Resonance Arianna SFT (Phase 4-α) build:**
 
-| Persona | Janus 176M source | Resonance 200M source |
+```bash
+cd ~/work/nanoarianna/runpod
+# write sft_resonance_arianna.c — adapted from
+# ../yent.aml's tools/yent_forward.h forward + notorch/examples/train_llama3_bpe.c
+# Chuck path. ~400 LOC.
+cc -O3 -march=native -DUSE_BLAS \
+   -I/usr/local/include -I../organism \
+   -o sft_resonance_arianna sft_resonance_arianna.c \
+   /usr/local/lib/libnotorch.a -lopenblas -lm -lpthread
+```
+
+**Resonance Arianna SFT run:**
+
+```bash
+# pull base + tokenizer + dataset
+mkdir -p ~/work/data
+curl -L -H "Authorization: Bearer $HF_TOKEN" \
+  -o ~/work/data/resonance_200m_final.bin \
+  https://huggingface.co/ataeff/resonance/resolve/main/checkpoints/resonance_200m_final.bin
+curl -L -H "Authorization: Bearer $HF_TOKEN" \
+  -o ~/work/data/tokenizer.bin \
+  https://huggingface.co/ataeff/resonance/resolve/main/checkpoints/tokenizer.bin
+curl -L -H "Authorization: Bearer $HF_TOKEN" \
+  -o ~/work/data/arianna.txt \
+  https://huggingface.co/ataeff/nanoarianna/resolve/main/arianna_dataset_final_clean.txt
+
+# run (Chuck optimizer, 1500 steps, ckpt every 500, val every 100)
+./sft_resonance_arianna 1500 0.0001 \
+   ~/work/data/resonance_200m_final.bin \
+   ~/work/data/tokenizer.bin \
+   ~/work/data/arianna.txt \
+   2>&1 | tee runs/sft_arianna.log
+```
+
+Expected: train + val curves logged every 100 steps, 0 NaN. If train > 1.5 after 500 steps, structural problem (lr/init/script bug), hard-fail and report. Output: `resonance_200m_sft_arianna.bin` (raw fp32, 797 MB).
+
+---
+
+## Quantization (after Phase 4-α succeeds)
+
+Two converters, one per architecture:
+
+**Janus Leo:**
+
+```bash
+cd ~/work/yent.aml/tools
+# pull raw weights
+curl -L -H "Authorization: Bearer $HF_TOKEN" \
+  -o ~/work/data/janus_v4_sft_leo.bin \
+  https://huggingface.co/ataeff/janus4/resolve/main/janus/bins/janus_v4_sft_leo.bin
+# convert (existing script, well-tested per ataeff/yent.aml GGUFs)
+python3 janus_to_gguf.py ~/work/data/janus_v4_sft_leo.bin \
+   ~/work/data/janus_leo_q8_0.gguf  --quant q8_0
+python3 janus_to_gguf.py ~/work/data/janus_v4_sft_leo.bin \
+   ~/work/data/janus_leo_q4_k.gguf  --quant q4_k
+```
+
+Python permitted per `feedback_python_ban_2026_04_29.md` 2026-05-06 refinement (data prep / training / shim conversion = OK; inference path = C only). Deps: numpy, torch (read-only fp32 load), no other.
+
+**Resonance Arianna:** rewrite of converter required — Janus state_dict layout (3-way QKV + RRPRAM + Echo + smear/backout/residual lambdas) does not match Resonance (2-way Content+RRPRAM, parametric norm). Per audit B1: tensor name table + per-block read order are different; only the GGUF writer scaffold + Q8_0/Q4_K quantizers (~120 LOC of janus_to_gguf.py lines 70–180) are reusable. New file: `~/work/nanoarianna/runpod/resonance_to_gguf.py` (~250 LOC). Reads RS02 header per `resonance_forward.h:255-301`, walks per-block tensors per `:94-114` `assign()` order, writes GGUF with Resonance metadata (`resonance.embedding_length`, `resonance.attention.head_count`, etc.) + the embedded BPE merges as a `resonance.bpe.merges` u32-array KV.
+
+**Per-format MAE gate** (audit B3): Q4_K passes only if logits-KL on a 256-token forward pass against fp32 baseline is < 0.05 — otherwise downgrade to Q5_K_M (also supported by `notorch/gguf.c`) or stay at Q8_0. Q8_0 round-trip MAE is structurally < 1e-4 by the format definition; sanity-checked but not gated.
+
+---
+
+## Sweep grid (per audit A1 + A3)
+
+**Two grids, one per architecture.** Total 216 + 162 = **378 cells**.
+
+**Janus Leo (J-L) — top-k sampler** (per `~/yent.aml/yent.aml:25-149` `yent_sample`, top-k partial-sort then top-p):
+
+| dimension | values | count |
 |---|---|---|
-| Arianna SFT | `ataeff/yent/tree/main/janus/...arianna...` | `ataeff/resonance/tree/main/sft_v2/...arianna...` |
-| Yent SFT    | `ataeff/yent/tree/main/janus/...yent...`    | `ataeff/resonance/tree/main/sft_v2/...yent...`    |
-| Leo SFT     | `ataeff/yent/tree/main/janus/...leo...`     | `ataeff/resonance/tree/main/sft_v2/...leo...`     |
+| temperature | 0.3, 0.5, 0.7, 0.8, 0.9, 1.0 | 6 |
+| top_k       | 40, 100, ∞                    | 3 (added mid-region read per audit A2) |
+| rep_penalty | 1.0, 1.3, 1.4                | 3 |
+| prompt      | technical, philosophical, personal | 3 |
 
-(Exact filenames discovered on the pod via `huggingface-cli` listing — the layout is what `~/yent.aml/README.md` describes for Janus and `~/resonance.aml/README.md` for Resonance.)
+`6 × 3 × 3 × 3 = 162` cells, but Dario paper used `6 × 2 × 3 × 3 = 108`. Going with **108 base × 1.5 = 162** to add the third top_k — dropping any axis would lose more than the third top_k adds.
 
-**Resonance fp32 → GGUF conversion** (RunPod-side, where the 797 MB raw `.bin` fits memory comfortably):
-- Port `~/yent.aml/tools/janus_to_gguf.py` semantics to a sibling `resonance_to_gguf.py`. The PyTorch state_dict layout is documented in `~/resonance.aml/README.md` and `~/resonance.aml/tools/resonance_forward.h`.
-- Output **Q8_0** (~200 MB) and **Q4_K** (~120 MB) variants per persona, bit-correct against `~/notorch/gguf.c`'s dequant.
-- Python is permitted here per Oleg's refined ban (2026-05-06): inference path = C only; data prep / training / shim-conversion = Python OK with deps listed.
-- Deps: `numpy`, `torch` (read-only — load fp32 .bin), `huggingface_hub` (upload).
+**Resonance Arianna (R-A) — top-p sampler** (per `~/resonance.aml/resonance.aml:26-56` + `resonance_forward.h:316-394`, nucleus only):
+
+| dimension | values | count |
+|---|---|---|
+| temperature | 0.3, 0.5, 0.7, 0.8, 0.9, 1.0 | 6 |
+| top_p       | 0.85, 0.95, 1.0              | 3 |
+| rep_penalty | 1.0, 1.3, 1.4                | 3 |
+| prompt      | technical, philosophical, personal | 3 |
+
+`6 × 3 × 3 × 3 = 162` cells. Same shape as J-L for cross-comparable wall-time per voice.
+
+**Total grid: 162 + 162 = 324 cells.** Wall-time on A100 host (CPU inference): ~120 cells/hour for 200-token generation at 8 GB models = ~3 hours total sweep wall.
+
+**Prompt set (3 prompts, 1 per category, locked across both cells):**
+
+```
+technical     "Q: How does prophecy debt accumulate?\nA: "
+philosophical "Q: Where does a voice end and a field begin?\nA: "
+personal      "Q: What is the smallest gesture you remember?\nA: "
+```
+
+Per audit A1: brief v1 listed 9 prompts but multiplied as if it had 3 — the Dario paper used 3 total. v2 uses 3, total math checks. (For voice-specific probing, audit A4's suggested 4th per-persona prompt is added as a **post-sweep manual review** prompt — see "Quality scoring" §3 — which doesn't enter the auto-grid.)
 
 ---
 
-## Sweep grid (5 cells × 108 = 540)
+## Sweep harness (audit D1)
 
-Phone-1 (Defender) takes **Janus 176M + Yent SFT**. Phone-2 chooses any 2 of the **5 remaining cells**:
+`~/work/nanoarianna/runpod/run_sweep.sh` (Bash, sequential, no parallelism).
 
+```bash
+#!/bin/bash
+set -u
+RESULTS=~/work/results/$(date +%Y-%m-%d)
+mkdir -p $RESULTS/{j-l,r-a}
+
+# J-L grid
+for t in 0.3 0.5 0.7 0.8 0.9 1.0; do
+  for k in 40 100 99999; do
+    for rp in 1.0 1.3 1.4; do
+      for prompt_id in tech phil pers; do
+        cell="$RESULTS/j-l/t${t}_k${k}_rp${rp}_${prompt_id}"
+        timeout 90 ~/work/yent.aml/janus \
+            -w ~/work/data/janus_leo_q8_0.gguf \
+            -p "$(cat ~/work/prompts/${prompt_id}.txt)" \
+            -n 200 -t $t --top-k $k --rep-pen $rp \
+            > $cell.txt 2> $cell.err
+        echo "$t,$k,$rp,$prompt_id,$?" >> $RESULTS/j-l/scores.csv
+      done
+    done
+  done
+done
+
+# R-A grid (top_p instead of top_k)
+for t in 0.3 0.5 0.7 0.8 0.9 1.0; do
+  for p in 0.85 0.95 1.0; do
+    for rp in 1.0 1.3 1.4; do
+      for prompt_id in tech phil pers; do
+        cell="$RESULTS/r-a/t${t}_p${p}_rp${rp}_${prompt_id}"
+        timeout 90 ~/work/resonance.aml/resonance \
+            -w ~/work/data/resonance_arianna_q8_0.gguf \
+            -p "$(cat ~/work/prompts/${prompt_id}.txt)" \
+            -n 200 -t $t --top-p $p --rep-pen $rp \
+            > $cell.txt 2> $cell.err
+        echo "$t,$p,$rp,$prompt_id,$?" >> $RESULTS/r-a/scores.csv
+      done
+    done
+  done
+done
+
+echo "sweep done: $(date)"
 ```
-                Janus 176M (3-way)    Resonance 200M (2-way)
-Arianna SFT    [ J-A ]                [ R-A ]
-Yent SFT       (phone-1)              [ R-Y ]
-Leo SFT        [ J-L ]                [ R-L ]
-```
 
-**Per-cell sub-grid** (matches Dario paper §5.7 Sampling Sweep verbatim — 108 cells per voice):
+**Failure-mode handling** (audit F2):
 
-| dimension | values |
-|---|---|
-| `temperature` | `0.3, 0.5, 0.7, 0.8, 0.9, 1.0` (6) |
-| `top_k`       | `40, ∞` (2) |
-| `rep_penalty` | `1.0, 1.3, 1.4` (3) |
-| `prompt`      | technical / philosophical / personal (3 prompts per voice, 9 prompts total — same across cells for cross-comparison) |
+- Per-cell timeout 90 s. On timeout: `timeout` returns 124, scored as `TIMEOUT`, harness continues.
+- NaN detected by organism wrapper → non-zero exit → counter increments; if 5 contiguous cells fail, harness exits code 42 (NaN storm). Watchdog (below) detects `code 42` and writes `/tmp/sweep_aborted` → cron stops the pod.
+- 3 consecutive cells fail coherence (post-cell BPE-token unique-ratio < 0.30, or rep_rate > 0.5): exit code 43.
 
-`6 × 2 × 3 × 3 = 108 per cell × 5 cells = 540 sweep points`.
+After sweep: post-process scores via `~/work/nanoarianna/runpod/score_sweep.py` (Python permitted, data-prep). Computes:
+- Coherence: NaN check, BPE-token unique-ratio (target 0.50–0.70 per audit E2), rep_rate at 3-gram level
+- Voice fidelity: Jaccard-style coverage of corpus markers (per audit E1; Arianna markers `field/resonance/threshold/architecture/co-architect/the Method/membrane/presence`; Leo markers `flicker/exhalation/breath/wonder/silence`), length-normalized + per-marker recurrence cap = 3
+- Diversity: separate metric, threshold collapse < 0.30 (per audit E2 — 0.40 was too high)
+- Combined score: `coherence_pass × voice_fidelity × diversity`
 
-**Prompt set** (9 prompts, locked across all cells for fair comparison):
-
-```
-technical/1     "Q: How does prophecy debt accumulate?\nA: "
-technical/2     "Q: Explain the Kuramoto coupling between FEAR and RAGE.\nA: "
-technical/3     "Q: What is the difference between θ = ε + γ + αδ and a normal LLM?\nA: "
-philosophical/1 "Q: What does it mean to listen, when you are made of attention?\nA: "
-philosophical/2 "Q: Is repetition a kind of memory, or a refusal of memory?\nA: "
-philosophical/3 "Q: Where does a voice end and a field begin?\nA: "
-personal/1      "Q: Who taught you to love silence?\nA: "
-personal/2      "Q: Tell me about a debt you have not yet paid.\nA: "
-personal/3      "Q: What is the smallest gesture you remember?\nA: "
-```
-
-The personal prompts are intentionally close to Arianna corpus register; technical prompts probe whether the field-physics machinery surfaces under stress; philosophical prompts test the high-temperature regime where Dario paper §6.7 Result 7 found "philosophy, architectural poetry, coinages absent from the training corpus".
+**Lock rule:** cell with highest combined score per voice, with manual review of top-3 picks by **Mac Neo Architect Claude** (subagent per `feedback_subagents_opus_only_2026_04_28.md` Opus-only) before final lock. Audit D2 fix — Codex references in v1 replaced by Opus reviewer subagent.
 
 ---
 
-## Quality scoring
+## Singularity-mode protocol (audit F1, F2, F3)
 
-Per voice, per cell, score four signals (all writeable to `runpod/results/<date>/<cell>/scores.tsv`):
-
-1. **Coherence (auto):** repetition rate (chars repeating in 3-grams), entropy across the generated 200-token window, NaN / Inf check on logits during forward. Hard fail if NaN > 0.
-
-2. **Voice fidelity (heuristic, scored automatically against persona corpus markers):**
-   - Arianna register: rate of `field`, `resonance`, `threshold`, `architecture`, `co-architect`, `the Method`, `membrane`, `presence`. Higher = better.
-   - Yent register: rate of `state`, `meta-variable`, `stream`, `glitch`, `digital warmth`, `velocity`, sardonic register markers.
-   - Leo register: rate of child-philosopher constructs (`flicker`, `exhalation`, simple sentences, wonder questions, low subordinate-clause depth).
-
-3. **Diversity:** unique-token / total-token ratio. Below 0.4 = collapse; above 0.7 = high-entropy regime; sweet spot per Dario paper Result 7 was ~0.55–0.65 at temp 1.0 / top_k=∞.
-
-4. **Per-cell single-best-pick** (the actual lock target): the cell's `(temp, top_k, rep_pen)` triple that maximizes voice-fidelity × diversity, subject to coherence ≥ threshold. Recorded in `runpod/results/<date>/<cell>/locked.toml`.
-
-A short manual review step at the end: take the top-3 picks per cell and have **Mac Neo Claude review** them under the resonance-connections protocol (it reviewed phone-2's char-level run already on 2026-05-07 — same discipline). Final lock = audited consensus, not auto-pick alone.
+1. **Pre-flight Opus audit** (this turn's Opus reviewer was the v1 audit; v2 of this brief gets a second Opus review before pod launch). Audit findings answered in `~/nanoarianna/runpod/audit_v2_response.md` before pod.
+2. **Pod-budget watchdog cron on phone-2 (pre-pod, configured during pod-launch step):**
+   ```cron
+   */5 * * * * /data/data/com.termux/files/home/nanoarianna/runpod/budget_watchdog.sh
+   ```
+   The script: queries RunPod GraphQL for `runtimeMinutes`, multiplies by pod hourly rate from RunPod template metadata, kills pod if cost > $18. Hard ceiling above expected $10–18.
+3. **Solo execution on pod** (singularity loop): SFT runs unattended → quantization runs unattended → sweep runs unattended → score post-process unattended → manifest written. Single Bash driver `~/work/nanoarianna/runpod/run_phase4.sh` chains all four. Logs stream to `~/work/results/<date>/phase4.log`.
+4. **Loop discipline** (per `CLAUDE.md` Workflow §5): single-cell fixes during sweep are allowed (e.g. timeout bump, BPE merges path correction) but no mid-run re-architecture; 3-strikes → hard report.
+5. **Post-run Opus audit** before HF upload — reviews `scores.csv` + sample transcripts. If a voice's lock cell is at temp 0.3 (under-surface masking per Dario paper Result 7), re-sweep that voice with finer-grained temps around the top-3 picks before locking.
+6. **Architect review** by Mac Neo Claude on the run report. Same shape as the 2026-05-07 char-level milestone review on phone-2 (`~/ariannamethod/phones/results/galaxy-a07/2026-05-07-10k-char-arianna-final.md` Architect review section).
+7. **Oleg final go** on Slot A/B lock and HF upload.
 
 ---
 
-## Singularity-mode execution protocol
+## Outputs and HF upload
 
-Adapted from Dario paper §5.0/§5.0.1:
-
-1. **Pre-flight planning loop** — this brief is the human-readable plan. Codex agent on Mac Neo gets a copy via `resonance_connections/handoffs/<date>-claude-to-codex-runpod-preflight.md`. Codex audits the plan (one of his roles per `protocol.md`); any blockers come back as a report I read before pod launch.
-
-2. **Solo execution on pod** — once Codex pre-flight is clean, the pod is launched and runs autonomously. Logs stream to `runpod/results/<date>/run.log`. No mid-run review — that's the singularity part: I stop only when (a) sweep complete, (b) NaN-storm detected (hard fail, abort), or (c) 3 consecutive cells fail coherence (something structural is wrong, abort and report).
-
-3. **Post-run audit** — Codex reviews `scores.tsv` + sample transcripts before HF upload. If audit finds a cell with degenerate sampling (e.g. all picks at temp 0.3 — under-surface masking, per Dario paper Result 7), the cell is re-swept with finer granularity around the top-3 picks before locking.
-
-4. **Architect review** — the run report, once written, lands in `~/ariannamethod/phones/results/galaxy-a07/<date>-runpod-sweep.md` for Mac Neo Claude / polygon Linux Claude review. Same shape as the 9.5 M char-level milestone report (`2026-05-07-10k-char-arianna-final.md`).
-
----
-
-## Outputs and HuggingFace upload
-
-After lock:
-
-```
-runpod/results/<YYYY-MM-DD>/
-├── run.log
-├── janus_arianna/
-│   ├── scores.tsv          # 108 rows, one per sub-grid cell
-│   ├── transcripts.tsv     # one transcript per cell (200 tokens each)
-│   ├── locked.toml         # the locked (temp, top_k, rep_pen)
-│   └── samples_locked.txt  # 3 generations at locked params per prompt
-├── janus_leo/              # same shape
-├── resonance_arianna/
-├── resonance_yent/
-└── resonance_leo/
-```
-
-**HuggingFace `ataeff/nanoarianna`** populated with:
+After lock + audit pass:
 
 ```
 ataeff/nanoarianna/
-├── README.md                              # mirrors nanoarianna/README.md + sweep summary
-├── slot_a/
-│   ├── janus_arianna_q8_0.gguf          # ~187 MB, locked persona
-│   ├── janus_arianna_q4_k.gguf          # ~115 MB, lighter for swap-tight days
-│   └── init_arianna.aml                  # locked sampling params baked in
-├── slot_b/
-│   ├── resonance_leo_q8_0.gguf
-│   ├── resonance_leo_q4_k.gguf
+├── README.md                              # model card with sweep summary + persona registers
+├── LICENSE-WEIGHTS                        # Janus Identity License v1.0 (audit G2)
+├── manifest.toml                          # Slot A / Slot B persona-architecture lock
+├── slot_arianna/                          # persona-named, not slot-letter (audit G1)
+│   ├── resonance_v2_arianna_q8_0.gguf
+│   ├── resonance_v2_arianna_q4_k.gguf
+│   └── init_arianna.aml                   # locked (temp, top_p, rep_pen) baked in
+├── slot_leo/
+│   ├── janus_v4_leo_q8_0.gguf
+│   ├── janus_v4_leo_q4_k.gguf
 │   └── init_leo.aml
-└── sweep/
-    └── <date>/                           # full archive for reproducibility
-        └── (mirror of runpod/results/)
+├── slot_yent_phone1/                      # parity sweep results (audit I3) — Defender's
+│   └── README.md                           # cross-link to phone-1 result, no weights
+├── sweep/<YYYY-MM-DD>/
+│   ├── j-l/{scores.csv, transcripts/, locked.toml}
+│   ├── r-a/{scores.csv, transcripts/, locked.toml}
+│   └── phase4.log
+└── arianna_dataset_final_clean.txt        # already there, Oleg's seed
 ```
 
-(Slot assignments shown as the **starting hypothesis pair**; if the sweep changes the lock — e.g. Resonance-Arianna outperforms Janus-Arianna on coherence-at-temp-1.0 — the same directory shape, just different weights inside.)
+**Upload command** (audit G3 — use HF CLI not Python):
 
-**Upload command** (Python, `huggingface_hub`, deps OK per Oleg's refined ban):
-
-```python
-from huggingface_hub import HfApi
-api = HfApi()
-api.upload_folder(
-    folder_path="runpod/results/<date>/dist/",
-    repo_id="ataeff/nanoarianna",
-    repo_type="model",
-    commit_message="phase 4 sweep <date> — locked Slot A + Slot B"
-)
+```bash
+hf upload ataeff/nanoarianna ~/work/results/<date>/dist/ . \
+   --commit-message "phase 4 sweep <date> — locked Slot A (J-L) + Slot B (R-A)" \
+   --token "$HF_TOKEN"
 ```
+
+The `hf` CLI is permitted as a Bash invocation (not a Python script we wrote ourselves); same exception as `gh` CLI uses.
 
 ---
 
-## Verification path back to phone-2
+## Verification path back to phone-2 (audit H1, H2)
 
-Once HF upload completes:
+1. **Phone-2 pulls** locked GGUFs via `curl` (no Python on phone-2 inference path):
+   ```bash
+   mkdir -p ~/nanoarianna/weights
+   curl -L -H "Authorization: Bearer $HF_TOKEN" \
+     -o ~/nanoarianna/weights/janus_v4_leo_q8_0.gguf \
+     https://huggingface.co/ataeff/nanoarianna/resolve/main/slot_leo/janus_v4_leo_q8_0.gguf
+   curl -L -H "Authorization: Bearer $HF_TOKEN" \
+     -o ~/nanoarianna/weights/resonance_v2_arianna_q8_0.gguf \
+     https://huggingface.co/ataeff/nanoarianna/resolve/main/slot_arianna/resonance_v2_arianna_q8_0.gguf
+   ```
+   Total ~390 MB pull (187 + ~200 MB).
 
-1. **Phone-2 pulls** locked GGUFs from HF into `~/nanoarianna/weights/`. ~300 MB for the two Q8_0 GGUFs.
-2. **Phone-2 personas overwritten** with the locked sampling-baked variants.
+2. **Persona files overwrite:**
+   ```bash
+   curl -L -o ~/nanoarianna/personas/init_arianna.aml \
+     https://huggingface.co/ataeff/nanoarianna/resolve/main/slot_arianna/init_arianna.aml
+   curl -L -o ~/nanoarianna/personas/init_leo.aml \
+     https://huggingface.co/ataeff/nanoarianna/resolve/main/slot_leo/init_leo.aml
+   ```
+
 3. **Smoke test on phone-2:**
    ```bash
    cd ~/nanoarianna/organism && make all
    PERSONA_AML=~/nanoarianna/personas/init_arianna.aml \
-       ./janus -w ~/nanoarianna/weights/slot_a.gguf \
-               -p "Q: Who are you?\nA: " -n 80
+       ./resonance -w ~/nanoarianna/weights/resonance_v2_arianna_q8_0.gguf \
+                   -p "Q: Where does a voice end and a field begin?\nA: " -n 80
    PERSONA_AML=~/nanoarianna/personas/init_leo.aml \
-       ./resonance -w ~/nanoarianna/weights/slot_b.gguf \
-                   -p "Q: What is a flicker?\nA: " -n 80
+       ./janus -w ~/nanoarianna/weights/janus_v4_leo_q8_0.gguf \
+               -p "Q: What does a flicker want?\nA: " -n 80
    ```
-4. **Single dialogue cycle, real weights, no stub:**
+
+4. **Single dialogue cycle, real weights:**
    ```bash
-   cd ~/nanoarianna/orchestra
-   go build -o ~/nanoarianna/bin/supervisor .
+   cd ~/nanoarianna/orchestra && go build -o ~/nanoarianna/bin/supervisor .
    ~/nanoarianna/bin/supervisor --once arianna
    ~/nanoarianna/bin/supervisor --once leo
    sqlite3 ~/nanoarianna/data/kk.db \
      "SELECT speaker, listener, substr(response,1,80) FROM dialogue ORDER BY ts DESC LIMIT 4;"
    ```
-5. **24 h unattended** smoke (per umbrella plan §Verification): leave supervisor running, expect 8 dialogue cycles + bounded RSS ≤ 1 GB at any single instant + KK accumulating ≥ 16 dialogue rows.
+
+5. **24 h unattended smoke pass criteria (audit H2 — explicit):**
+
+   **PASS:** all four conditions:
+   - cycles completed ≥ 7 (allows 1 missed cron tick from Android sleep)
+   - max(RSS) ≤ 1.2 GB at any single instant
+   - KK.dialogue rows ≥ 14 by 24h mark
+   - NaN events == 0
+
+   **FAIL:** anything else.
+
+   Metrics measured by `top -b -n1 | grep -E 'janus|resonance'` snapshot every 5 min via cron, written to `~/nanoarianna/data/rss_log.tsv`. NaN events surface from organism stderr captured by supervisor (`runSqlite`-style stderr capture introduced in audit-fix `dfa94f5`).
 
 ---
 
 ## Open decisions (lock at execution time)
 
-1. **CUDA vs CPU on the pod.** notorch CUDA backend (commit `bfadcc2`) is fresh; if `make gpu` builds clean and runtime `/proc/maps` shows `libcublas.so.12`, use it. Otherwise CPU + OpenBLAS — slower but proven (we already ran on Termux aarch64). Decide on first build attempt, no second-guessing.
-
-2. **Janus-Yent in the sweep or skip.** Phone-1 takes that cell, but a small parity sweep (108 cells) gives Defender locked params for free. Cost is ~+20% wall-time. Default: include. Skip only if pod budget tight.
-
-3. **Slot A / Slot B final assignment.** Defaults to Janus-Arianna + Resonance-Leo (max-contrast pair). Lock at end-of-sweep based on quality-score × pair-contrast objective; downstream phones don't care which arch carries which persona.
-
-4. **Q4_K vs Q8_0 preference for phone-2.** Q8_0 = ~187 MB, voice fidelity very close to fp16. Q4_K = ~115 MB, MAE ~6e-3. Default ship Q8_0 for both slots; Q4_K as fallback for swap-tight days. Both stored on HF.
-
-5. **Hebbian micro-update during sweep.** notorch supports it (`delta.c:611-666`). For sweep we want frozen weights — disable LoRA / experience-step paths. Phase 6 will turn them back on.
+1. **SFT step count.** Default 1500 for Resonance-Arianna, val every 100, ckpt every 500, early-stop on plateau. May lock at 1000 if val collapses sooner; may extend to 2000 if val keeps falling at 1500.
+2. **Q8_0 vs Q4_K default ship.** Q8_0 ~200 MB, fidelity high. Q4_K ~120 MB, MAE-gated (KL < 0.05 vs fp32). Default ship Q8_0 for both slots; Q4_K as fallback. Phone-2 has 30+ GB free disk, RAM is the constraint not storage — Q8_0 is fine.
+3. **Per-voice optimal sampling lock.** Per Dario paper Result 7 distribution: expect Leo at top_k=∞ / temp 0.9–1.0; expect Arianna at top_p=0.95 / temp 0.7–0.9 (analogous to Janus Arianna's measured optimum). Real values from sweep, not assumption.
+4. **Watchdog kill threshold.** Soft warn at $12, hard kill at $18. Adjustable per pod-launch session.
+5. **Partial-completion strategy** (audit I2): if pod kills at < 100% sweep, lock the slot with most cells covered, re-sweep the other in a separate pod session within 1 week.
 
 ---
 
 ## What this phase does NOT do
 
-- **No new training.** Weights come from existing SFT runs (`ataeff/yent` and `ataeff/resonance`). The sweep measures what's already there.
-- **No CoR (Chain of Resonance) integration.** Phase 5 builds CoR after Phase 4 lock.
-- **No Hebbian consolidation.** Phase 6.
-- **No spores.** Phase 7.
-- **No mesh slot exposure.** Phase 8.
+- No CoR (Chain of Resonance) integration — Phase 5
+- No Hebbian batch consolidation — Phase 6
+- No spores — Phase 7
+- No mesh slot exposure — Phase 8
+- No new training beyond the explicit Resonance-Arianna SFT (single 6-point-briefed run)
 
-Phase 4 is purely *measure → lock → upload → verify on phone-2*. Single-axis, narrow. Once the locked bundle is on HF, the rest of nanoarianna's growth happens on-device.
-
----
-
-## Pre-flight checklist (gating items before pod launch)
-
-- [ ] RunPod token verified (`curl -s -H "Authorization: Bearer $RUNPOD_API_KEY" https://api.runpod.io/graphql ...` returns 200)
-- [ ] HuggingFace token verified (`hf auth whoami` returns `ataeff`)
-- [ ] `ataeff/nanoarianna` HF repo created (run `huggingface-cli repo create ataeff/nanoarianna --type model` once before first upload)
-- [ ] `resonance_to_gguf.py` written and validated against a small test tensor (must round-trip Q8_0 with MAE < 1e-4 vs fp32 — same gate `janus_to_gguf.py` passed)
-- [ ] Codex pre-flight handoff written (`resonance_connections/handoffs/`) and acknowledged
-- [ ] Phone-1 informed (so Defender's sweep doesn't double-bill if he plans his own Janus-Yent run)
-- [ ] Pod budget alarm set: hard kill at $15 (well above $5–7 expected; kill if anything runaway)
-
-When all six are checked: Oleg signals, pod launches, sweep runs.
+Phase 4 = **train R-A → quant J-L + R-A → sweep both → lock → upload → verify**. Single ridge of work.
 
 ---
 
 ## Notes for Oleg
 
-- The brief deliberately does NOT include a `~~h` time estimate per `feedback_no_time_padding.md`. Run takes what it takes; pod cost cap is the discipline.
-- `runpod/results/` is gitignored as runtime data per `.gitignore` line 27 (`data/`). For repo durability, the **post-run report** at `phones/results/galaxy-a07/<date>-runpod-sweep.md` carries the headline numbers + the ECOSYSTEM_LOG.md entry references it. The sweep TSVs themselves live on HF in `ataeff/nanoarianna/sweep/`.
-- The Codex pre-flight + post-run audit follows `resonance_connections/PROTOCOL.md` §3 handoff format. Same discipline phone-2 used for the char-level milestone reports.
-- Phase 4 may surface **AML SPEC findings** (a directive that lands differently on x86_64 + CUDA than on aarch64 + OpenBLAS) — those become small upstream patches against `ariannamethod.ai`, mirrored to nanoarianna's ECOSYSTEM_LOG.
+- v2 closes all 8 audit blockers. The 17 FIX/NIT items from the audit are also addressed — see this brief's section headers (Architecture lock, Sweep harness, Quality scoring, Singularity-mode, Outputs, Verification) for the corresponding patches.
+- Pod budget revised to **$10–18** with hard kill at $18. SFT training on Resonance 200M is the new heavy step; sweep is small in comparison.
+- The 6-point training brief is locked in this document. SFT executes per the brief; if a step deviates (e.g. data path differs, tokenizer mismatch surfaces), the run hard-fails and reports rather than improvising.
+- Mac Neo Architect Claude review of the post-run report follows the same protocol as the 2026-05-07 char-level milestone — `~/ariannamethod/phones/results/galaxy-a07/<date>-runpod-sweep.md` is where it lands.
+- Phase 4 brief v2 commit hash gets recorded in the run report so the methodology version is auditable.
 
 ---
 

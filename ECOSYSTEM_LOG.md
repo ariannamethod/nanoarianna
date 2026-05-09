@@ -4,6 +4,83 @@ Chronological journal of nanoarianna decisions and events. Newest at top. Each e
 
 ---
 
+## 2026-05-09 — Phase 4 brief v2 (post-audit + post-pivot, weights J1 inventory verified)
+
+After v1 of the brief landed, ran an Opus subagent code audit per Oleg's
+request. 47 numbered findings; verdict "do not launch with v1 as-is"
+with 8 blockers identified.
+
+**Hardest blocker (J1):** v1 assumed Arianna and Leo SFT existed for
+both architectures. HF API verification proved otherwise — Janus 176M
+has all 3 SFTs at `ataeff/janus4/janus/bins/janus_v4_sft_{arianna,
+yent,leo}.bin`, but **Resonance 200M has only Yent SFT** at
+`ataeff/resonance/sft_v2/`. Arianna and Leo SFT do not exist for
+Resonance on HF.
+
+**Oleg's pivot** (this session): "Янус Иэнт → значит Резонанс это
+Арианна; либо проведи SFT бэйсу Резонанса на Арианне." Plus a new
+HF repo `ataeff/nanoarianna` was provisioned with the Arianna dataset
+(`arianna_dataset_final_clean.txt` 1.21 MB — same bytes as the corpus
+that produced bit-identical char-level loss in `memory/
+milestone_phone2_galaxy_a07_10k_2026_05_07.md`) plus the SFT-format
+JSONL variant.
+
+**Slot pair re-locked:**
+- Slot A = **Janus 176M + Leo SFT** (existing weights, just convert to GGUF)
+- Slot B = **Resonance 200M + Arianna SFT (NEW)** (Phase 4-α SFT step on pod)
+
+Three voice anchors across the ecosystem preserved (phone-1 J-Y,
+phone-2 J-L + R-A).
+
+**Phase 4 expanded** to 5 steps on one pod:
+1. Phase 4-α: Resonance base + Arianna SFT (NEW training step,
+   1500 steps Chuck on RunPod A100; 6-point brief locked in v2 §6-point)
+2. Quantize Janus Leo + Resonance Arianna → GGUF Q8_0 + Q4_K
+3. Two-grid sweep: J-L 162 cells (top-k) + R-A 162 cells (top-p) =
+   324 total
+4. Lock per-voice optimal + Opus audit + Mac Neo Architect review
+5. HF upload to `ataeff/nanoarianna` with `LICENSE-WEIGHTS` (Janus
+   Identity License v1.0)
+
+**8 audit blockers closed in v2:**
+- J1: weights inventory verified, Slot pair flipped
+- J2: HF repo creation order resolved (Oleg created it; pre-flight
+  verifies, doesn't create)
+- J3: CUDA path dropped — A100 + CPU+OpenBLAS (cleanest, no upstream
+  notorch CUDA install path exists)
+- A1: prompt count math reconciled (3 prompts × 6 temps × 3 top_k|top_p
+  × 3 rep_pen = 162 per voice, 324 total)
+- A3: sampler grid split per architecture (Janus top-k {40, 100, ∞};
+  Resonance top-p {0.85, 0.95, 1.0})
+- B1: Resonance converter described as full rewrite, not "port"
+- D1: sweep harness specified (Bash, sequential, per-cell 90s timeout,
+  NaN/coherence hard-fail conditions, score post-process)
+- G2: LICENSE-WEIGHTS added to upload structure + pre-flight checklist
+
+**17 FIX/NIT items from audit also addressed:** prompt count,
+top_k mid-region, voice-fidelity Jaccard normalization, diversity
+threshold 0.30 not 0.40, watchdog cron concrete, slot-letter naming
+replaced by persona-naming, Codex → Opus reviewer rename, phone-2
+pull mechanism (curl with explicit URLs), 24h smoke pass criteria
+explicit, Q4_K MAE gate added, Resonance BPE merges in GGUF metadata
+KV array.
+
+**Pod budget revised** $5-7 → **$10-18** to cover the SFT step.
+Hard kill at $18.
+
+**Pre-flight checklist now 6 items** (v1 had 6 too; reorganized):
+HF token verified / `ataeff/nanoarianna` repo verified (Oleg created)
+/ LICENSE-WEIGHTS source confirmed / SFT script smoke-builds locally
+/ RunPod token verified / watchdog cron drafted on phone-2.
+
+When all six green, Oleg signals, pod launches.
+
+**This entry replaces the v1 brief entry above.** v1 brief content
+overwritten in `runpod/PHASE_4_BRIEF.md` — git history preserves it
+at commit `5ddcb12`.
+
+---
+
 ## 2026-05-09 — Phase 4 brief written (RunPod sweep plan)
 
 `runpod/PHASE_4_BRIEF.md` written and committed. Phase 4 is the
