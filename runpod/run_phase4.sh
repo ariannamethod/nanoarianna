@@ -49,7 +49,7 @@ HF_REPO="${HF_REPO:-ataeff/nanoarianna}"
 BUDGET_USD="${BUDGET_USD:-18}"
 SFT_STEPS="${SFT_STEPS:-1500}"
 SFT_LR="${SFT_LR:-3e-5}"
-SFT_CTX="${SFT_CTX:-512}"
+SFT_CTX="${SFT_CTX:-256}"
 
 DATE_TAG="$(date +%F)"
 TIMESTAMP="$(date +%FT%H%M%S)"
