@@ -196,19 +196,23 @@ log "─── step 2: 4b verify ───"
 log "step 2 OK"
 
 # ─── 3. Smoke-50 SFT ──────────────────────────────────────────────────────
-log "─── step 3: smoke-50 SFT (50 steps, kill on bad signal) ───"
 SMOKE_PREFIX="$OUT/sft_v2/smoke50"
-if ! "$NANOREPO/runpod/sft_resonance_arianna" \
-        "$IN/resonance_200m_final.bin" \
-        "$IN/arianna_dataset_final_clean.txt" \
-        "$SMOKE_PREFIX" \
-        50 "$SFT_LR" "$SFT_CTX" 2>&1 | tee -a "$RUN_REPORT"; then
-    rc=$?
-    log "FATAL: smoke-50 exited $rc"
-    exit $rc
+if [ "${SKIP_SMOKE:-0}" = "1" ]; then
+    log "─── step 3: smoke-50 SKIPPED (SKIP_SMOKE=1) ───"
+else
+    log "─── step 3: smoke-50 SFT (50 steps, kill on bad signal) ───"
+    if ! "$NANOREPO/runpod/sft_resonance_arianna" \
+            "$IN/resonance_200m_final.bin" \
+            "$IN/arianna_dataset_final_clean.txt" \
+            "$SMOKE_PREFIX" \
+            50 "$SFT_LR" "$SFT_CTX" 2>&1 | tee -a "$RUN_REPORT"; then
+        rc=$?
+        log "FATAL: smoke-50 exited $rc"
+        exit $rc
+    fi
+    log "step 3 OK — smoke-50 PASS"
+    rm -f "${SMOKE_PREFIX}_final.bin"   # smoke output not needed
 fi
-log "step 3 OK — smoke-50 PASS"
-rm -f "${SMOKE_PREFIX}_final.bin"   # smoke output not needed
 
 # ─── 4. Full SFT ──────────────────────────────────────────────────────────
 log "─── step 4: full SFT ($SFT_STEPS steps) ───"
