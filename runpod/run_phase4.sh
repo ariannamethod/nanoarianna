@@ -91,7 +91,25 @@ for f in resonance_200m_final.bin arianna_dataset_final_clean.txt janus_v4_sft_l
 done
 log "step 0a OK — corpus + 2 base weights staged"
 
-# ─── 0b. Budget watchdog (background) ─────────────────────────────────────
+# ─── 0b. Toolchain repos clone-if-missing ─────────────────────────────────
+log "─── step 0b: toolchain repos ───"
+clone_if_missing() {
+    local url="$1" dst="$2"
+    if [ -d "$dst/.git" ]; then
+        log "  cached: $dst"
+    else
+        log "  clone $url → $dst"
+        git clone --depth 1 "$url" "$dst" 2>&1 | tail -3
+    fi
+}
+mkdir -p "$WORK"
+clone_if_missing "https://github.com/ariannamethod/notorch"          "$NOTORCH"
+clone_if_missing "https://github.com/ariannamethod/ariannamethod.ai" "$AML"
+clone_if_missing "https://github.com/ariannamethod/yent.aml"         "$YENTAML"
+clone_if_missing "https://github.com/ariannamethod/resonance.aml"    "$RESAML"
+log "step 0b OK"
+
+# ─── 0c. Budget watchdog (background) ─────────────────────────────────────
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
     log "starting budget watchdog (limit \$$BUDGET_USD)"
     bash "$NANOREPO/runpod/budget_watchdog.sh" \
