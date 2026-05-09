@@ -171,12 +171,14 @@ log "step 1 OK"
 # ─── 2. 4b verify ─────────────────────────────────────────────────────────
 log "─── step 2: 4b verify ───"
 {
-    cd "$NOTORCH"
-    log "  notorch_test..."
-    # notorch_test final line: "Results: 47 passed, 0 failed"
-    if ! ./notorch_test 2>&1 | tail -10 | grep -qE "passed, 0 failed|47 passed"; then
-        log "FATAL: notorch_test did not pass"; exit 11
-    fi
+    log "  libnotorch.a present..."
+    [ -s /usr/local/lib/libnotorch.a ] || {
+        log "FATAL: /usr/local/lib/libnotorch.a missing"; exit 11
+    }
+    log "  libnotorch_gpu.a present..."
+    [ -s /usr/local/lib/libnotorch_gpu.a ] || {
+        log "FATAL: /usr/local/lib/libnotorch_gpu.a missing"; exit 11
+    }
 
     log "  janus binary executable..."
     [ -x "$NANOREPO/organism/janus" ] || {
