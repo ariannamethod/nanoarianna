@@ -50,8 +50,9 @@ run_cell() {
     local t1=$(date +%s)
     local wall=$((t1 - t0))
 
-    # NaN detection: organism prints "NaN" on stderr if forward-pass produces non-finite
-    if [ $rc -ne 0 ] || grep -qiE "nan|inf" "${out_file}.err" 2>/dev/null; then
+    # NaN detection: organism prints "NaN" on stderr if forward-pass produces
+    # non-finite. Word-bounded — "nanoarianna" / "infer" / "info" etc. won't trip.
+    if [ $rc -ne 0 ] || grep -qiwE "nan|inf|-?nan|-?inf" "${out_file}.err" 2>/dev/null; then
         NAN_STREAK=$((NAN_STREAK + 1))
         echo "[sweep $label] NaN/fail (streak=$NAN_STREAK)" >&2
     else
