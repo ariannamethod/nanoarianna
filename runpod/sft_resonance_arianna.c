@@ -474,6 +474,7 @@ int main(int argc, char **argv) {
     }
 
     nt_seed(42);
+    srand(42);     /* libc RNG used by sampling loop — separately from notorch */
 #ifdef USE_CUDA
     if (gpu_init() == 0) {
         nt_set_gpu_mode(1);
@@ -494,7 +495,7 @@ int main(int argc, char **argv) {
     float val_history[64] = {0};
     int   val_count = 0;
     int   plateau_streak = 0;
-    int   smoke_passed = (steps <= 50 ? 1 : 0);  /* skip smoke check on small runs */
+    int   smoke_passed = (steps < 50 ? 1 : 0);   /* skip smoke check only when run too short to reach step 49; at steps=50 the kill checks DO fire */
 
     for (int step = 0; step < steps; step++) {
         float lr = nt_schedule_get_lr(&sched);
